@@ -1,0 +1,9 @@
+"AddonInfo"
+{
+    addonSteamAppID        1226
+    addontitle            "Danyria Score System Test"
+    addonContent_Script   1
+    addonauthor           "B站 千早ですわ"
+    addonversion          "1.0.0"
+    addonDescription      "Danyria score telemetry test plugin for the external HUD."
+}

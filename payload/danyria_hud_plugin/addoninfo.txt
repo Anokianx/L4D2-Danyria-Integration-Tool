@@ -1,0 +1,9 @@
+"AddonInfo"
+{
+    addonSteamAppID        1226
+    addontitle            "Danyria"
+    addonContent_Script   1
+    addonauthor           "B站 千早ですわ"
+    addonversion          "1.0.0"
+    addonDescription      "Danyria telemetry provider for the external HUD."
+}

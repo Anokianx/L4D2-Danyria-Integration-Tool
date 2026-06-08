@@ -1,0 +1,9 @@
+"danyria_hud"
+{
+    "base"          "coop"
+    "maxplayers"    "4"
+    "DisplayTitle"  "Danyria HUD Telemetry"
+    "Description"   "Danyria HUD telemetry."
+    "Image"         "maps/any"
+    "Author"        "B站 千早ですわ"
+}

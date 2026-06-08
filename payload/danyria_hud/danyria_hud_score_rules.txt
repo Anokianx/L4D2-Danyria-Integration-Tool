@@ -1,0 +1,1 @@
+DHUD_SCORE_RULES|common=0.1|special=1.5|witch=3|tank=5|damage_done_score=0.1|damage_done_step=200|damage_taken_per10=-1|incap=-10|death=-18|ledge=-6|revive=5|heal=-3|pills=-1.5|adrenaline=-1.5|supply_small=-1|supply_weapon=-2

@@ -1,0 +1,30 @@
+{
+  "language": "zh",
+  "speed": {
+    "enabled": false,
+    "x": 1070,
+    "y": 460,
+    "w": 474,
+    "h": 368,
+    "opacity": 0.95,
+    "max_speed": 420
+  },
+  "enemy": {
+    "enabled": false,
+    "x": 1331,
+    "y": 456,
+    "w": 506,
+    "h": 494,
+    "opacity": 0.95,
+    "max_enemies": 6,
+    "max_distance": 1800
+  },
+  "penalty": {
+    "enabled": false,
+    "x": 886,
+    "y": 463,
+    "w": 608,
+    "h": 330,
+    "opacity": 0.95
+  }
+}

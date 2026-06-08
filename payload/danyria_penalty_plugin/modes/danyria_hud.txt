@@ -1,0 +1,9 @@
+"danyria_hud"
+{
+    "base"          "coop"
+    "maxplayers"    "4"
+    "DisplayTitle"  "Danyria Score System Test"
+    "Description"   "Danyria score-system test telemetry."
+    "Image"         "maps/any"
+    "Author"        "B站 千早ですわ"
+}
