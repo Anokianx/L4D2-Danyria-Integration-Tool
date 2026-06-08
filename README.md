@@ -33,4 +33,4 @@ Author / 作者：B站 千早ですわ
 
 - Bilibili/B站: 千早ですわ
 - QQ: 827677473
-- Discord:
+- Discord:https://discord.gg/YEaU3Fzq
