@@ -23,7 +23,7 @@ Danyria 是一个面向《求生之路2》的开源整合工具，主要用于 M
 - 多语言界面支持
 - Windows 打包构建脚本
 
-- ## Disclaimer / 免责声明
+## Disclaimer / 免责声明
 
 This project is an unofficial community tool for Left 4 Dead 2. It is not affiliated with, endorsed by, or sponsored by Valve Corporation.
 
