@@ -13,8 +13,6 @@ Danyria 是一个面向《求生之路2》的开源整合工具，主要用于 M
 - Multi-language UI support
 - Build scripts for Windows packaging
 
-## 功能
-
 - 《求生之路2》MOD 管理
 - 速度、敌人血量、评分数据等外置 HUD
 - 武器数值编辑与参考显示
