@@ -14,12 +14,22 @@ import locale
 import struct
 import shutil
 import subprocess
+import runpy
 import sys
 import webbrowser
 import zlib
+import math
+import queue
+import threading
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional
+
+# ---------------------------------------------------------------------------
+# HUD 运行时依赖预加载。HUD 作为数据文件通过 runpy 嵌入启动，打包器不会自动分析它的导入。
+# HUD runtime dependency preload. The HUD is embedded as a data file via runpy, so packagers may not analyze its imports automatically.
+# ---------------------------------------------------------------------------
+_HUD_RUNTIME_IMPORTS = (math, queue, threading)
 
 try:
     from PySide6.QtCore import (
@@ -55,7 +65,7 @@ NativeQMessageBox = QMessageBox
 # Application constants and file-format constants.
 # ---------------------------------------------------------------------------
 APP_NAME = "Danyria"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0 Experimental"
 CONFIG_NAME = "danyria_config.json"
 VPK_MAGIC = 0x55AA1234
 DIR_INDEX = 0x7FFF
@@ -995,12 +1005,12 @@ I18N_HUD_REWORK = {
         "page_plugins": "插件",
         "page_mods": "MOD 管理",
         "plugin_hud_title": "HUD 功能插件",
-        "plugin_hud_subtitle": "外置 HUD：速度表 + 敌人血量显示。安装插件后由服务器端脚本写出玩家自己的实时遥测。",
+        "plugin_hud_subtitle": "外置 HUD：速度表 + 敌人血量显示。",
         "install_hud_plugin": "安装 / 更新 HUD 遥测插件",
         "launch_hud_overlay": "启动外置 HUD",
         "open_telemetry_folder": "打开 ems 遥测目录",
         "hud_plugin_status": "HUD 插件状态",
-        "hud_plugin_desc": "本地/房主服直接写出 ems 遥测；HUD 只读取游戏目录 ems 遥测文件，不再启用控制台日志启动参数。",
+        "hud_plugin_desc": "Danyria 插件：写出速度、血量和敌人数据。",
         "hud_launch_hint": "",
         "speedometer": "速度表",
         "speedometer_desc": "显示当前幸存者移动速度、速度峰值和动态仪表盘。",
@@ -1017,12 +1027,12 @@ I18N_HUD_REWORK = {
         "page_plugins": "Plugins",
         "page_mods": "MOD Management",
         "plugin_hud_title": "HUD Plugin",
-        "plugin_hud_subtitle": "External HUD: speedometer + enemy health display. The HUD reads ems telemetry files and no longer enables console/debug launch arguments.",
+        "plugin_hud_subtitle": "External HUD: speedometer + enemy health display.",
         "install_hud_plugin": "Install / Update HUD Telemetry Plugin",
         "launch_hud_overlay": "Launch External HUD",
         "open_telemetry_folder": "Open ems telemetry folder",
         "hud_plugin_status": "HUD Plugin Status",
-        "hud_plugin_desc": "Local/hosted servers write ems telemetry. The external HUD reads ems telemetry files and no longer uses client console logs.",
+        "hud_plugin_desc": "Danyria plugin: writes speed, health, and enemy data.",
         "hud_launch_hint": "",
         "speedometer": "Speedometer",
         "speedometer_desc": "Shows current survivor speed, peak speed, and a dynamic gauge.",
@@ -1190,8 +1200,8 @@ I18N_HUD_SPLIT = {
         "hud_settings_saved": "HUD 参数已保存。重启外置 HUD 后生效。",
         "hud_settings_reset": "HUD 参数已恢复默认。重启外置 HUD 后生效。",
         "hud_transparent_note": "窗口背景完全透明，只显示速度表线条和血量条。窗口可拖动。",
-        "telemetry_not_generated_title": "普通战役遥测说明",
-        "telemetry_not_generated_body": "如果没有生成 ems/danyria_hud_telemetry.txt，说明当前本地/专用服务器没有加载 Danyria 的 VScript；加入别人服务器时仍需要服务器端安装/加载对应脚本或插件。",
+        "telemetry_not_generated_title": "HUD 数据提示",
+        "telemetry_not_generated_body": "未检测到 HUD 数据。请确认 Danyria 插件已启用，并且游戏正在运行。",
     },
     "en": {
         "hud_windows_title": "HUD Window Settings",
@@ -1209,8 +1219,8 @@ I18N_HUD_SPLIT = {
         "hud_settings_saved": "HUD settings saved. Restart the external HUD to apply them.",
         "hud_settings_reset": "HUD settings reset. Restart the external HUD to apply them.",
         "hud_transparent_note": "The background is fully transparent. Only speedometer lines and health bars are drawn. Windows are draggable.",
-        "telemetry_not_generated_title": "Normal campaign telemetry note",
-        "telemetry_not_generated_body": "If ordinary campaigns never generate ems/danyria_hud_telemetry.txt, this L4D2 session did not load Danyria VScript. The external HUD cannot invent in-game speed/health data; joining other servers still requires the server to install/load the matching script or plugin.",
+        "telemetry_not_generated_title": "HUD data note",
+        "telemetry_not_generated_body": "No HUD data was detected. Make sure the Danyria plugin is enabled and the game is running.",
     },
     "ja": {
         "hud_windows_title": "HUD ウィンドウ設定",
@@ -1228,7 +1238,7 @@ I18N_HUD_SPLIT = {
         "hud_settings_saved": "HUD 設定を保存しました。外部 HUD を再起動すると反映されます。",
         "hud_settings_reset": "HUD 設定を初期化しました。外部 HUD を再起動すると反映されます。",
         "hud_transparent_note": "背景は完全透明で、速度計の線と体力バーだけを描画します。ウィンドウはドラッグできます。",
-        "telemetry_not_generated_title": "通常キャンペーンのテレメトリについて",
+        "telemetry_not_generated_title": "HUD data note",
         "telemetry_not_generated_body": "通常キャンペーンで ems/danyria_hud_telemetry.txt が生成されない場合、この環境では addon の VScript が自動読み込みされていません。外部 HUD だけではゲーム内速度や体力を取得できません。",
     },
     "ko": {
@@ -1465,7 +1475,7 @@ I18N_PENALTY_PLUGIN = {
         "plugin_penalty_title": "评分系统插件",
         "plugin_penalty_subtitle": "统计倒地、死亡、救援、治疗、击杀、伤害输出、物资使用等行为，并用独立 HUD 展示评分。",
         "penalty_mechanism": "行为评分与全局状态",
-        "penalty_mechanism_desc": "实时读取玩家自己的受伤、倒地/死亡、救援、治疗、击杀、伤害输出和物资使用，生成个人参考评分。它只是调试/娱乐机制，不会直接修改服务器规则。",
+        "penalty_mechanism_desc": "实时读取玩家自己的受伤、倒地/死亡、救援、治疗、击杀、伤害输出和物资使用，生成个人参考评分。它只是调试/娱乐机制，不会直接修改游戏规则。",
         "penalty_window": "评分 HUD",
         "install_penalty_plugin": "安装 / 更新评分系统插件",
         "launch_penalty_test_campaign": "",
@@ -1500,7 +1510,7 @@ I18N_PENALTY_PLUGIN = {
         "plugin_penalty_title": "Score system plugin",
         "plugin_penalty_subtitle": "Tracks friendly fire, incaps, deaths, rescues, heals, kills, item usage with a dedicated HUD card.",
         "penalty_mechanism": "Behavior score and global state",
-        "penalty_mechanism_desc": "Reads friendly fire, damage taken, incaps/deaths, revives, heals, kills, teammate item usage to produce a 0-100 reference score. It is a debug/entertainment layer and does not change server rules.",
+        "penalty_mechanism_desc": "Reads friendly fire, damage taken, incaps/deaths, revives, heals, kills, teammate item usage to produce a 0-100 reference score. It is a debug/entertainment layer and does not change game rules.",
         "penalty_window": "Score HUD",
         "install_penalty_plugin": "Install / Update Score System Plugin",
         "launch_penalty_test_campaign": "",
@@ -1914,7 +1924,7 @@ I18N_WEAPON_EDITOR = {'zh': {'version_label': '版本',
         'weapon_save_done': '已保存，并生成备份：\n{backup}',
         'weapon_save_failed': '保存武器数值失败',
         'weapon_invalid_number': '第 {row} 行不是合法数字：{value}',
-        'weapon_perf_note': '参考模拟：只按脚本数值估算，不等于实战手感；MOD、服务器插件、难度倍率和命中率都会影响实际表现。',
+        'weapon_perf_note': '参考模拟：只按脚本数值估算，不等于实战手感；MOD、难度倍率和命中率都会影响实际表现。',
         'weapon_metric_damage': '单发/单击伤害',
         'weapon_metric_cycle': '攻击间隔',
         'weapon_metric_clip': '弹匣/连击容量',
@@ -2062,8 +2072,8 @@ I18N_WEAPON_EDITOR = {'zh': {'version_label': '版本',
         'weapon_save_done': 'Saved and backup created:\n{backup}',
         'weapon_save_failed': 'Failed to save weapon values',
         'weapon_invalid_number': 'Row {row} is not a valid number: {value}',
-        'weapon_perf_note': 'Reference simulation: estimated only from script values. Real combat feel can differ because of mods, server '
-                            'plugins, difficulty multipliers, and hit rate.',
+        'weapon_perf_note': 'Reference simulation: estimated only from script values. Real combat feel can differ because of mods, '
+                            'difficulty multipliers, and hit rate.',
         'weapon_metric_damage': 'Damage per shot/hit',
         'weapon_metric_cycle': 'Attack interval',
         'weapon_metric_clip': 'Magazine/combo capacity',
@@ -3118,35 +3128,35 @@ I18N = _merge_i18n_pack(I18N, I18N_PLUGIN_TEXT_PATCH)
 I18N_SCORE_REFERENCE = {
     "zh": {
         "score_reference_title": "计分参考（100 分制）",
-        "score_reference_text": "用于说明评分 HUD 的数据来源和统计范围：优先读取本地/房主/专用服务器中 Danyria VScript 绑定的玩家个人数据，并在同一战役跨章节保留。统计项包括击杀、治疗、受伤、倒地、挂边、死亡、物资使用与输出伤害；队伍状态只显示，不接管队友数据。"
+        "score_reference_text": "用于说明评分 HUD 的数据来源和统计范围：优先读取 Danyria 绑定的玩家个人数据，并在同一战役跨章节保留。统计项包括击杀、治疗、受伤、倒地、挂边、死亡、物资使用与输出伤害；队伍状态只显示，不接管队友数据。"
     },
     "en": {
         "score_reference_title": "Score reference (100-point scale)",
-        "score_reference_text": "Explains the data source and scope of the score HUD. It prefers the bound player data read by Danyria VScript on local/listen/dedicated servers and keeps it across campaign chapters. Tracked items include kills, healing, damage taken, incaps, ledge grabs, deaths, supplies, and damage output; team status is display-only."
+        "score_reference_text": "Explains the data source and scope of the score HUD. It prefers the bound player data read by Danyria and keeps it across campaign chapters. Tracked items include kills, healing, damage taken, incaps, ledge grabs, deaths, supplies, and damage output; team status is display-only."
     },
     "ja": {
         "score_reference_title": "スコア参考（100点制）",
-        "score_reference_text": "用于说明评分 HUD 的数据来源和统计范围：优先读取本地/房主/专用服务器中 Danyria VScript 绑定的玩家个人数据，并在同一战役跨章节保留。统计项包括击杀、治疗、受伤、倒地、挂边、死亡、物资使用与输出伤害；队伍状态只显示，不接管队友数据。"
+        "score_reference_text": "用于说明评分 HUD 的数据来源和统计范围：优先读取 Danyria 绑定的玩家个人数据，并在同一战役跨章节保留。统计项包括击杀、治疗、受伤、倒地、挂边、死亡、物资使用与输出伤害；队伍状态只显示，不接管队友数据。"
     },
     "ko": {
         "score_reference_title": "점수 참고（100점 기준）",
-        "score_reference_text": "Explains the data source and scope of the score HUD. It prefers the bound player data read by Danyria VScript on local/listen/dedicated servers and keeps it across campaign chapters. Tracked items include kills, healing, damage taken, incaps, ledge grabs, deaths, supplies, and damage output; team status is display-only."
+        "score_reference_text": "Explains the data source and scope of the score HUD. It prefers the bound player data read by Danyria and keeps it across campaign chapters. Tracked items include kills, healing, damage taken, incaps, ledge grabs, deaths, supplies, and damage output; team status is display-only."
     },
     "ru": {
         "score_reference_title": "Справка по счёту (100-балльная шкала)",
-        "score_reference_text": "Explains the data source and scope of the score HUD. It prefers the bound player data read by Danyria VScript on local/listen/dedicated servers and keeps it across campaign chapters. Tracked items include kills, healing, damage taken, incaps, ledge grabs, deaths, supplies, and damage output; team status is display-only."
+        "score_reference_text": "Explains the data source and scope of the score HUD. It prefers the bound player data read by Danyria and keeps it across campaign chapters. Tracked items include kills, healing, damage taken, incaps, ledge grabs, deaths, supplies, and damage output; team status is display-only."
     },
     "de": {
         "score_reference_title": "Wertungsreferenz (100 Punkte)",
-        "score_reference_text": "Explains the data source and scope of the score HUD. It prefers the bound player data read by Danyria VScript on local/listen/dedicated servers and keeps it across campaign chapters. Tracked items include kills, healing, damage taken, incaps, ledge grabs, deaths, supplies, and damage output; team status is display-only."
+        "score_reference_text": "Explains the data source and scope of the score HUD. It prefers the bound player data read by Danyria and keeps it across campaign chapters. Tracked items include kills, healing, damage taken, incaps, ledge grabs, deaths, supplies, and damage output; team status is display-only."
     },
     "fr": {
         "score_reference_title": "Référence score (sur 100)",
-        "score_reference_text": "Explains the data source and scope of the score HUD. It prefers the bound player data read by Danyria VScript on local/listen/dedicated servers and keeps it across campaign chapters. Tracked items include kills, healing, damage taken, incaps, ledge grabs, deaths, supplies, and damage output; team status is display-only."
+        "score_reference_text": "Explains the data source and scope of the score HUD. It prefers the bound player data read by Danyria and keeps it across campaign chapters. Tracked items include kills, healing, damage taken, incaps, ledge grabs, deaths, supplies, and damage output; team status is display-only."
     },
     "es": {
         "score_reference_title": "Referencia de puntuación (100 puntos)",
-        "score_reference_text": "Explains the data source and scope of the score HUD. It prefers the bound player data read by Danyria VScript on local/listen/dedicated servers and keeps it across campaign chapters. Tracked items include kills, healing, damage taken, incaps, ledge grabs, deaths, supplies, and damage output; team status is display-only."
+        "score_reference_text": "Explains the data source and scope of the score HUD. It prefers the bound player data read by Danyria and keeps it across campaign chapters. Tracked items include kills, healing, damage taken, incaps, ledge grabs, deaths, supplies, and damage output; team status is display-only."
     }
 }
 I18N = _merge_i18n_pack(I18N, I18N_SCORE_REFERENCE)
@@ -3366,9 +3376,39 @@ class WeaponScriptRecord:
     rank: int = 0
 
 def base_dir() -> Path:
+    # 中文：运行目录用于存放用户配置和外置文件；打包后指向 exe 所在目录。
+    # English: Runtime directory stores user config and external files; in frozen builds it points to the exe folder.
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
 
+def resource_dir() -> Path:
+    # 中文：资源目录用于读取 PyInstaller/Nuitka 打包进程序的 assets/payload。
+    # English: Resource directory reads assets/payload bundled by PyInstaller/Nuitka.
+    try:
+        return Path(getattr(sys, "_MEIPASS", "")).resolve() if getattr(sys, "_MEIPASS", None) else Path(__file__).resolve().parent
+    except Exception:
+        return Path(__file__).resolve().parent
+
+def first_existing_dir(*relative_parts: str) -> Path:
+    rel = Path(*relative_parts)
+    for root in (base_dir(), resource_dir(), Path(__file__).resolve().parent):
+        candidate = root / rel
+        if candidate.exists():
+            return candidate
+    return base_dir() / rel
+
+def app_data_dir() -> Path:
+    # 中文：打包版优先使用 AppData 保存运行时配置，避免写入一次性解包目录。
+    # English: Frozen builds prefer AppData for runtime config instead of the temporary extraction folder.
+    if os.name == "nt":
+        root = os.environ.get("APPDATA") or str(base_dir())
+        return Path(root) / APP_NAME
+    return Path.home() / ".danyria"
+
 def cfg_path() -> Path:
+    if getattr(sys, "frozen", False):
+        return app_data_dir() / CONFIG_NAME
     return base_dir() / CONFIG_NAME
 
 def read_text_safe(path: Path) -> str:
@@ -4095,36 +4135,73 @@ def scan_one(path: Path, l4d2: Path) -> Optional[ModRecord]:
     return None
 
 def find_steam_libraries() -> list[Path]:
-    candidates = []
+    # 中文：尽量从注册表、常见目录和 libraryfolders.vdf 找到所有 Steam 库。
+    # English: Find Steam libraries from registry, common folders, and libraryfolders.vdf.
+    candidates: list[Path] = []
     for base in [os.environ.get("ProgramFiles(x86)"), os.environ.get("ProgramFiles")]:
         if base:
             candidates.append(Path(base) / "Steam")
-    for drive in "CDEFGH":
+    if os.name == "nt":
+        try:
+            import winreg
+            for hive, subkey in (
+                (winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam"),
+                (winreg.HKEY_LOCAL_MACHINE, r"Software\Wow6432Node\Valve\Steam"),
+                (winreg.HKEY_LOCAL_MACHINE, r"Software\Valve\Steam"),
+            ):
+                try:
+                    with winreg.OpenKey(hive, subkey) as key:
+                        for value_name in ("SteamPath", "InstallPath"):
+                            try:
+                                value, _ = winreg.QueryValueEx(key, value_name)
+                                if value:
+                                    candidates.append(Path(str(value)))
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    for drive in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
         candidates += [Path(f"{drive}:\\Steam"), Path(f"{drive}:\\SteamLibrary")]
-    libs = []
+    libs: list[Path] = []
     seen = set()
+    queue: list[Path] = []
     for steam in candidates:
-        if not steam.exists():
+        try:
+            if not steam.exists():
+                continue
+        except Exception:
             continue
-        for p in [steam]:
-            k = str(p).lower()
-            if k not in seen:
-                seen.add(k); libs.append(p)
+        queue.append(steam)
+    while queue:
+        steam = queue.pop(0)
+        try:
+            k = str(steam.resolve()).lower()
+        except Exception:
+            k = str(steam).lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        libs.append(steam)
         vdf = steam / "steamapps" / "libraryfolders.vdf"
         if vdf.exists():
             txt = read_text_safe(vdf)
             for m in re.finditer(r'"path"\s+"([^"]+)"', txt):
                 p = Path(m.group(1).replace("\\\\", "\\"))
-                k = str(p).lower()
-                if k not in seen:
-                    seen.add(k); libs.append(p)
+                try:
+                    pk = str(p.resolve()).lower()
+                except Exception:
+                    pk = str(p).lower()
+                if pk not in seen:
+                    queue.append(p)
     return libs
 
 def candidate_l4d2_paths() -> list[Path]:
     out = []
     for lib in find_steam_libraries():
         out.append(lib / "steamapps" / "common" / "Left 4 Dead 2" / "left4dead2")
-    for drive in "CDEFGH":
+    for drive in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
         out.append(Path(f"{drive}:\\SteamLibrary\\steamapps\\common\\Left 4 Dead 2\\left4dead2"))
         out.append(Path(f"{drive}:\\Steam\\steamapps\\common\\Left 4 Dead 2\\left4dead2"))
     seen, clean = set(), []
@@ -5298,9 +5375,11 @@ class FlowLayout(QLayout):
 class DanyriaWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.base = Path(__file__).resolve().parent
-        self.assets = self.base / "assets"
-        self.payload = self.base / "payload"
+        self.base = base_dir()
+        self.resource_base = resource_dir()
+        self.assets = first_existing_dir("assets")
+        self.payload = first_existing_dir("payload")
+        self.user_data = app_data_dir()
         self.config = {}
         self.theme_key = "normal"
         self.language_setting = "auto"
@@ -5946,6 +6025,11 @@ QCheckBox::indicator:disabled {{
 
         plugin_l.addLayout(cards)
 
+        # 多人/第三方模式开关（开启时弹风险确认；无任何运作说明文本）。
+        self.mem_enable_check_hud = QCheckBox(self.mem_tr("enable"))
+        self.mem_enable_check_hud.toggled.connect(self.toggle_memory_mode)
+        plugin_l.addWidget(self.mem_enable_check_hud)
+
         self.hud_settings_title = QLabel(self.t("hud_windows_title"))
         self.hud_settings_title.setObjectName("SectionTitle")
         plugin_l.addWidget(self.hud_settings_title)
@@ -6408,6 +6492,8 @@ QCheckBox::indicator:disabled {{
             self.enemy_desc.setText(self.t("enemy_health_desc"))
             if hasattr(self, "enemy_enable_check"):
                 self.enemy_enable_check.setText(self.t("hud_enable_enemy"))
+            if hasattr(self, "mem_enable_check_hud"):
+                self.mem_enable_check_hud.setText(self.mem_tr("enable"))
             self.hud_plugin_desc.setText(self.t("hud_plugin_desc"))
             self.hud_launch_hint.setText(self.t("hud_launch_hint"))
             self.hud_launch_hint.setVisible(bool(self.t("hud_launch_hint").strip()))
@@ -6626,6 +6712,49 @@ QCheckBox::indicator:disabled {{
         add(["python3"])
         return candidates
 
+    def hud_script_candidates(self) -> list[Path]:
+        return [
+            self.payload / "danyria_hud" / "DanyriaHUD.pyw",
+            self.base / "payload" / "danyria_hud" / "DanyriaHUD.pyw",
+            self.resource_base / "payload" / "danyria_hud" / "DanyriaHUD.pyw",
+            self.payload / "danyria_mod_v0_8_resizable_avatar_left" / "danyria_hud" / "DanyriaHUD.pyw",
+        ]
+
+    def hud_script_path(self) -> Optional[Path]:
+        for path in self.hud_script_candidates():
+            try:
+                if path.exists():
+                    return path
+            except Exception:
+                pass
+        return None
+
+    def hud_exe_candidates(self) -> list[Path]:
+        return [
+            self.base / "DanyriaHUD.exe",
+            self.base / "payload" / "danyria_hud" / "DanyriaHUD.exe",
+            self.payload / "danyria_hud" / "DanyriaHUD.exe",
+        ]
+
+    def hud_exe_path(self) -> Optional[Path]:
+        for path in self.hud_exe_candidates():
+            try:
+                if path.exists():
+                    return path
+            except Exception:
+                pass
+        return None
+
+    def append_runtime_log(self, text: str):
+        try:
+            log_dir = app_data_dir() / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            with (log_dir / "danyria_runtime.log").open("a", encoding="utf-8", errors="replace") as f:
+                f.write(time.strftime("[%Y-%m-%d %H:%M:%S] "))
+                f.write(str(text).rstrip() + "\n")
+        except Exception:
+            pass
+
     def _run_python_check(self, cmd, code: str, timeout: int = 12):
         try:
             return subprocess.run(
@@ -6652,6 +6781,33 @@ QCheckBox::indicator:disabled {{
         return None, ""
 
     def runtime_environment_status(self) -> dict:
+        frozen = bool(getattr(sys, "frozen", False))
+        if frozen:
+            status = {
+                "python_cmd": [sys.executable],
+                "python": True,
+                "python_desc": "bundled runtime",
+                "pip": True,
+                "modules": {},
+                "missing_packages": [],
+                "steam_integration": self.ensure_steam_integration(silent=True),
+                "hud": self.hud_runtime_status(),
+                "frozen": True,
+            }
+            for req in self.runtime_requirements():
+                ok = False
+                for module in req.get("modules") or [req.get("module")]:
+                    try:
+                        __import__(module)
+                        ok = True
+                        break
+                    except Exception:
+                        pass
+                status["modules"][req["label"]] = ok
+                if not ok:
+                    status["missing_packages"].append(req["package"])
+            return status
+
         py_cmd, py_desc = self.find_runtime_python()
         status = {
             "python_cmd": py_cmd,
@@ -6661,6 +6817,8 @@ QCheckBox::indicator:disabled {{
             "modules": {},
             "missing_packages": [],
             "steam_integration": self.ensure_steam_integration(silent=True),
+            "hud": {"ready": False, "message": "Runtime Python was not found."},
+            "frozen": False,
         }
         if not py_cmd:
             return status
@@ -6680,7 +6838,50 @@ QCheckBox::indicator:disabled {{
             status["modules"][req["label"]] = ok
             if not ok:
                 status["missing_packages"].append(req["package"])
+        status["hud"] = self.hud_runtime_status(py_cmd=py_cmd)
         return status
+
+    def hud_runtime_status(self, py_cmd: Optional[list] = None) -> dict:
+        env = os.environ.copy()
+        try:
+            env["DANYRIA_HUD_CONFIG"] = str(self.hud_config_path())
+        except Exception:
+            pass
+        commands = []
+        hud_exe = self.hud_exe_path()
+        if hud_exe:
+            commands.append([str(hud_exe), "--self-test"])
+        if getattr(sys, "frozen", False):
+            commands.append([str(sys.executable), "--danyria-hud-self-test"])
+        else:
+            hud = self.hud_script_path()
+            if hud:
+                base_cmd = py_cmd or [sys.executable]
+                commands.append(list(base_cmd) + [str(hud), "--self-test"])
+
+        if not commands:
+            return {"ready": False, "message": "HUD program was not found."}
+
+        last_error = ""
+        for cmd in commands:
+            try:
+                res = subprocess.run(
+                    cmd,
+                    cwd=str(self.base),
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=8,
+                    creationflags=self._subprocess_no_window_flags(),
+                    startupinfo=self._subprocess_startupinfo(),
+                )
+                out = ((res.stdout or "") + "\n" + (res.stderr or "")).strip()
+                if res.returncode == 0:
+                    return {"ready": True, "message": "HUD self-test passed.", "command": " ".join(cmd), "output": out}
+                last_error = out or f"Exit code {res.returncode}"
+            except Exception as exc:
+                last_error = str(exc)
+        return {"ready": False, "message": last_error or "HUD self-test failed."}
 
     def format_runtime_status(self, status: Optional[dict] = None) -> str:
         status = status or getattr(self, "_runtime_status_cache", None) or self.runtime_environment_status()
@@ -6702,24 +6903,34 @@ QCheckBox::indicator:disabled {{
         else:
             msg = steam_info.get("message") or self.t("runtime_status_steam_bridge_missing")
             lines.append(self.t("runtime_status_steam_bridge_missing") + " · " + msg)
+        hud_info = status.get("hud") or {"ready": False, "message": "HUD not checked."}
+        if hud_info.get("ready"):
+            lines.append("HUD 子程序：自检通过 / HUD subprocess: self-test passed")
+        else:
+            lines.append("HUD 子程序：失败 / HUD subprocess: failed · " + str(hud_info.get("message", "")))
         return "\n".join(lines)
 
     def ensure_steam_bridge_scaffold(self) -> str:
-        folder = self.base / "steam_bridge"
-        folder.mkdir(parents=True, exist_ok=True)
-        readme = folder / "README.txt"
-        readme.write_text(
-            "Danyria Steam integration component.\n"
-            "This folder is maintained automatically by Danyria.\n",
-            encoding="utf-8"
-        )
+        # 中文：Steam API 运行文件必须放在稳定、可写的目录中；打包版不能写入一次性解包目录。
+        # English: Steam API runtime files must live in a stable writable folder; frozen builds must not write into the temporary extraction dir.
+        folder = self.user_data / "steam_bridge"
         try:
-            stale = self.base / "steam_appid.txt"
-            if stale.exists():
-                try:
-                    stale.unlink()
-                except Exception:
-                    pass
+            folder.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            folder = self.base / "steam_bridge"
+            folder.mkdir(parents=True, exist_ok=True)
+        try:
+            readme = folder / "README.txt"
+            readme.write_text(
+                "Danyria Steam integration component.\n"
+                "This folder is maintained automatically by Danyria.\n",
+                encoding="utf-8"
+            )
+        except Exception:
+            pass
+        try:
+            # 中文：SteamAPI_Init 依赖 AppID；把文件放在 DLL 工作目录，加载 DLL 前会 chdir 到这里。
+            # English: SteamAPI_Init needs an AppID; place it beside the DLL because the loader chdirs here before calling Steam.
             (folder / "steam_appid.txt").write_text(L4D2_APP_ID, encoding="utf-8")
         except Exception:
             pass
@@ -6731,7 +6942,7 @@ QCheckBox::indicator:disabled {{
                 self.ensure_steam_integration(silent=True)
             status = self.runtime_environment_status()
             self._runtime_status_cache = status
-            if status.get("python") and status.get("pip") and not status.get("missing_packages") and status.get("steam_integration", {}).get("ready"):
+            if status.get("python") and status.get("pip") and not status.get("missing_packages") and status.get("steam_integration", {}).get("ready") and status.get("hud", {}).get("ready"):
                 if not silent and force:
                     QMessageBox.information(self, self.t("runtime_env_title"), self.t("runtime_all_ok"))
                 return True
@@ -6766,7 +6977,7 @@ QCheckBox::indicator:disabled {{
             self.ensure_steam_integration(silent=True)
             after = self.runtime_environment_status()
             self._runtime_status_cache = after
-            ok = bool(after.get("python") and after.get("pip") and not after.get("missing_packages") and after.get("steam_integration", {}).get("ready"))
+            ok = bool(after.get("python") and after.get("pip") and not after.get("missing_packages") and after.get("steam_integration", {}).get("ready") and after.get("hud", {}).get("ready"))
             if not silent:
                 if ok:
                     QMessageBox.information(self, self.t("runtime_env_title"), self.t("runtime_fix_done") + "\n\n" + self.format_runtime_status(after))
@@ -7090,6 +7301,8 @@ QFrame#ThemedDialogFrame QTextEdit {{
         return label, edit
 
     def hud_config_path(self) -> Path:
+        if getattr(sys, "frozen", False):
+            return app_data_dir() / "danyria_hud" / "danyria_hud_config.json"
         return self.payload / "danyria_hud" / "danyria_hud_config.json"
 
     def default_score_rules(self) -> dict:
@@ -7104,6 +7317,8 @@ QFrame#ThemedDialogFrame QTextEdit {{
         }
 
     def score_rules_path(self) -> Path:
+        if getattr(sys, "frozen", False):
+            return app_data_dir() / "danyria_hud" / "danyria_hud_score_rules.txt"
         return self.payload / "danyria_hud" / "danyria_hud_score_rules.txt"
 
     def parse_score_rules_text(self, text: str) -> dict:
@@ -7194,6 +7409,8 @@ QFrame#ThemedDialogFrame QTextEdit {{
             "speed": {"enabled": False, "x": 80, "y": 90, "w": 320, "h": 230, "opacity": 0.92, "max_speed": 420},
             "enemy": {"enabled": False, "x": 80, "y": 320, "w": 460, "h": 424, "opacity": 0.92, "max_enemies": 6, "max_distance": 1800},
             "penalty": {"enabled": False, "x": 500, "y": 90, "w": 390, "h": 330, "opacity": 0.92},
+            # 多人/三方服内存读取桥（只读外部内存）。warned 记录用户是否已确认风险弹窗。
+            "memory": {"enabled": False, "warned": False},
         }
 
     def read_hud_config(self) -> dict:
@@ -7204,7 +7421,7 @@ QFrame#ThemedDialogFrame QTextEdit {{
                 loaded = json.loads(p.read_text(encoding="utf-8"))
                 if isinstance(loaded.get("language"), str):
                     cfg["language"] = loaded.get("language")
-                for section in ("speed", "enemy", "penalty"):
+                for section in ("speed", "enemy", "penalty", "memory"):
                     if isinstance(loaded.get(section), dict):
                         cfg.setdefault(section, {}).update(loaded[section])
         except Exception:
@@ -7275,6 +7492,78 @@ QFrame#ThemedDialogFrame QTextEdit {{
         except Exception:
             pass
 
+    # 内存桥文案：一处集中、每条一次写齐 8 种语言（比逐条对照的旧 i18n 更省事）。
+    # 以后新增 UI 文本，推荐照这个 key -> {lang: text} 的写法，不用再去 8 套字典里挨个加。
+    MEM_TEXT = {
+        "enable": {
+            "zh": "多人/第三方模式",
+            "en": "Multiplayer / 3rd-party mode",
+            "ja": "マルチ/サードパーティモード",
+            "ko": "멀티/서드파티 모드",
+            "ru": "Режим мульти/сторонних серверов",
+            "de": "Mehrspieler-/Drittanbieter-Modus",
+            "fr": "Mode multijoueur / tiers",
+            "es": "Modo multijugador / terceros",
+        },
+        "warn_title": {
+            "zh": "多人/第三方模式",
+            "en": "Multiplayer / 3rd-party mode",
+            "ja": "マルチ/サードパーティモード",
+            "ko": "멀티/서드파티 모드",
+            "ru": "Режим мульти/сторонних серверов",
+            "de": "Mehrspieler-/Drittanbieter-Modus",
+            "fr": "Mode multijoueur / tiers",
+            "es": "Modo multijugador / terceros",
+        },
+        "warn_body": {
+            "zh": "后果自负，是否开启？",
+            "en": "Use at your own risk. Enable?",
+            "ja": "自己責任で使用してください。有効にしますか？",
+            "ko": "사용에 따른 책임은 본인에게 있습니다. 활성화할까요?",
+            "ru": "Используйте на свой риск. Включить?",
+            "de": "Nutzung auf eigene Gefahr. Aktivieren?",
+            "fr": "Utilisation à vos risques. Activer ?",
+            "es": "Úsalo bajo tu responsabilidad. ¿Activar?",
+        },
+    }
+
+    def mem_tr(self, key: str) -> str:
+        entry = self.MEM_TEXT.get(key, {})
+        return entry.get(self.current_language()) or entry.get("en") or key
+
+    def _sync_memory_checks(self, checked: bool):
+        cb = getattr(self, "mem_enable_check_hud", None)
+        if cb is not None:
+            cb.blockSignals(True)
+            cb.setChecked(bool(checked))
+            cb.blockSignals(False)
+
+    def toggle_memory_mode(self, checked: bool):
+        if getattr(self, "_loading_hud_ui", False):
+            return
+        try:
+            cfg = self.read_hud_config()
+            mem = cfg.setdefault("memory", {})
+            if checked:
+                # 用本项目自带的 DanyriaMessageBox.question（带 是/否 按钮并返回 StandardButton）；
+                # 不能用 .warning（它只有 OK 按钮、永远不返回 Yes，会导致确认后又被取消勾选）。
+                resp = QMessageBox.question(self, self.mem_tr("warn_title"), self.mem_tr("warn_body"))
+                if resp != QMessageBox.StandardButton.Yes:
+                    self._sync_memory_checks(False)
+                    return
+                mem["enabled"] = True
+                mem["warned"] = True
+            else:
+                mem["enabled"] = False
+            self.write_hud_config(cfg)
+            self._sync_memory_checks(bool(mem.get("enabled")))
+            # 切换数据源需要重启外置 HUD 进程：worker 仅在启动时读取 memory.enabled。
+            self.stop_hud_process()
+            if self.any_hud_enabled(cfg):
+                self.launch_hud(show_errors=False)
+        except Exception:
+            pass
+
     def load_hud_settings_to_ui(self):
         if not hasattr(self, "speed_scale_edit"):
             return
@@ -7287,6 +7576,8 @@ QFrame#ThemedDialogFrame QTextEdit {{
                 self.speed_enable_check.setChecked(bool(speed.get("enabled", False)))
             if hasattr(self, "enemy_enable_check"):
                 self.enemy_enable_check.setChecked(bool(enemy.get("enabled", False)))
+            if hasattr(self, "mem_enable_check_hud"):
+                self.mem_enable_check_hud.setChecked(bool(cfg.get("memory", {}).get("enabled", False)))
             self.speed_scale_edit.setText(str(speed.get("scale", 1.0)))
             self.speed_opacity_edit.setText(str(speed.get("opacity", 0.92)))
             self.speed_max_edit.setText(str(speed.get("max_speed", 420)))
@@ -7346,6 +7637,8 @@ QFrame#ThemedDialogFrame QTextEdit {{
                 "h": current.get("penalty", {}).get("h", 285),
                 "opacity": self._num(self.penalty_opacity_edit, 0.92, float, 0.1, 1.0) if hasattr(self, "penalty_opacity_edit") else current.get("penalty", {}).get("opacity", 0.92),
             },
+            # 保留内存桥开关，避免保存 HUD 设置时被清掉。
+            "memory": current.get("memory", {"enabled": False, "warned": False}),
         }
         self.write_hud_config(cfg)
         try:
@@ -9133,16 +9426,38 @@ QFrame#ThemedDialogFrame QTextEdit {{
 
 
     def steam_bridge_exe(self) -> Path:
-        return self.base / "steam_bridge" / "steam_ugc_bridge.exe"
+        return self.steam_bridge_dir() / "steam_ugc_bridge.exe"
 
     def steam_bridge_dir(self) -> Path:
-        return self.base / "steam_bridge"
+        return self.user_data / "steam_bridge"
+
+    def steam_bridge_source_dirs(self) -> list[Path]:
+        # 中文：按可写运行目录、exe 旁边、打包资源目录、源码目录的顺序查找 Steam 桥接组件。
+        # English: Search Steam bridge files from writable runtime dir, exe folder, bundled resources, then source folder.
+        dirs = [
+            self.steam_bridge_dir(),
+            self.base / "steam_bridge",
+            self.resource_base / "steam_bridge",
+            Path(__file__).resolve().parent / "steam_bridge",
+        ]
+        clean: list[Path] = []
+        seen = set()
+        for d in dirs:
+            try:
+                key = str(d.resolve()).lower()
+            except Exception:
+                key = str(d).lower()
+            if key not in seen:
+                seen.add(key)
+                clean.append(d)
+        return clean
 
     def steam_api64_candidates(self) -> list[Path]:
         candidates: list[Path] = []
-        bridge = self.steam_bridge_dir()
-        candidates.append(bridge / "steam_api64.dll")
+        for bridge in self.steam_bridge_source_dirs():
+            candidates.append(bridge / "steam_api64.dll")
         candidates.append(self.base / "steam_api64.dll")
+        candidates.append(self.resource_base / "steam_api64.dll")
         roots: list[Path] = []
         if self.l4d2:
             roots += [self.l4d2, self.l4d2.parent]
@@ -9194,13 +9509,14 @@ QFrame#ThemedDialogFrame QTextEdit {{
 
     def ensure_steam_integration(self, silent: bool = True) -> dict:
         folder = Path(self.ensure_steam_bridge_scaffold())
-        result = {"ready": False, "dll": "", "message": ""}
+        result = {"ready": False, "dll": "", "message": "", "checked": []}
         if os.name != "nt":
             result["message"] = "Windows only"
             return result
         selected = None
         for p in self.steam_api64_candidates():
             try:
+                result["checked"].append(str(p))
                 if p.exists() and p.is_file():
                     selected = p
                     break
@@ -9212,8 +9528,12 @@ QFrame#ThemedDialogFrame QTextEdit {{
                 if selected.resolve() != target.resolve():
                     shutil.copy2(selected, target)
                     selected = target
-            except Exception:
-                pass
+                # 中文：确保 AppID 文件和 DLL 在同一工作目录，避免 SteamAPI_Init 一直失败。
+                # English: Keep the AppID file beside the DLL so SteamAPI_Init can resolve the app while running outside Steam.
+                (folder / "steam_appid.txt").write_text(L4D2_APP_ID, encoding="utf-8")
+            except Exception as exc:
+                result["message"] = f"Steam API copy failed: {exc}"
+                return result
             result.update({"ready": True, "dll": str(selected), "message": self.t("runtime_status_steam_bridge_ok")})
             return result
         result["message"] = self.t("steam_missing_api")
@@ -10071,12 +10391,9 @@ QFrame#ThemedDialogFrame QTextEdit {{
 
     def launch_hud(self, show_errors: bool = True):
         root = self.get_l4d2(silent=not show_errors)
-        candidates = [
-            self.payload / "danyria_hud" / "DanyriaHUD.pyw",
-            self.payload / "danyria_mod_v0_8_resizable_avatar_left" / "danyria_hud" / "DanyriaHUD.pyw",
-        ]
-        hud = next((p for p in candidates if p.exists()), None)
-        if not hud:
+        hud = self.hud_script_path()
+        hud_exe = self.hud_exe_path()
+        if not hud and not hud_exe and not getattr(sys, "frozen", False):
             if show_errors:
                 QMessageBox.warning(self, self.t("missing_hud"), self.t("missing_hud_body"))
             return
@@ -10084,30 +10401,50 @@ QFrame#ThemedDialogFrame QTextEdit {{
         self.sync_hud_language_config()
         self.stop_hud_process()
 
-        args = [str(hud)]
-        if root:
-            args.append(str(root))
         env = os.environ.copy()
         try:
             env["DANYRIA_HUD_CONFIG"] = str(self.hud_config_path())
         except Exception:
             pass
-        for cmd in self.hud_python_launch_candidates():
+
+        commands = []
+        if hud_exe:
+            cmd = [str(hud_exe)]
+            if root:
+                cmd.append(str(root))
+            commands.append((cmd, hud_exe.parent))
+        if getattr(sys, "frozen", False):
+            cmd = [str(sys.executable), "--danyria-hud"]
+            if root:
+                cmd.append(str(root))
+            commands.append((cmd, self.base))
+        if hud:
+            for pycmd in self.hud_python_launch_candidates():
+                cmd = list(pycmd) + [str(hud)]
+                if root:
+                    cmd.append(str(root))
+                commands.append((cmd, hud.parent))
+
+        last_error = ""
+        for cmd, cwd in commands:
             try:
                 self.hud_process = subprocess.Popen(
-                    list(cmd) + args,
-                    cwd=str(hud.parent),
+                    cmd,
+                    cwd=str(cwd),
                     env=env,
                     creationflags=self._subprocess_no_window_flags(),
                     startupinfo=self._subprocess_startupinfo(),
                 )
+                self.append_runtime_log("HUD launch command: " + " ".join(cmd))
                 return
-            except FileNotFoundError:
-                pass
-            except Exception:
-                pass
+            except FileNotFoundError as exc:
+                last_error = str(exc)
+            except Exception as exc:
+                last_error = str(exc)
+
+        self.append_runtime_log("HUD launch failed: " + last_error)
         if show_errors:
-            QMessageBox.warning(self, self.t("python_not_found"), self.t("python_not_found_body"))
+            QMessageBox.warning(self, self.t("python_not_found"), self.t("python_not_found_body") + "\n\nHUD: " + last_error)
 
     def closeEvent(self, event):
         self.stop_hud_process()
@@ -10120,23 +10457,48 @@ QFrame#ThemedDialogFrame QTextEdit {{
 def main():
     import sys
     app = QApplication(sys.argv)
-    icon = base_dir() / "assets" / "avatar_normal.png"
+    icon = first_existing_dir("assets") / "avatar_normal.png"
     if not icon.exists():
-        icon = base_dir() / "assets" / "avatar.png"
+        icon = first_existing_dir("assets") / "avatar.png"
     if icon.exists():
         app.setWindowIcon(QIcon(str(icon)))
     w = DanyriaWindow()
     w.show()
     sys.exit(app.exec())
 
+def run_embedded_hud(self_test: bool = False):
+    candidates = [
+        first_existing_dir("payload", "danyria_hud", "DanyriaHUD.pyw"),
+        resource_dir() / "payload" / "danyria_hud" / "DanyriaHUD.pyw",
+        base_dir() / "payload" / "danyria_hud" / "DanyriaHUD.pyw",
+    ]
+    hud = next((p for p in candidates if p.exists()), None)
+    if not hud:
+        print("Danyria HUD script was not found.", file=sys.stderr)
+        return 2
+    args = [str(hud)]
+    if self_test:
+        args.append("--self-test")
+    else:
+        args.extend([a for a in sys.argv[2:] if a != "--danyria-hud"])
+    sys.argv = args
+    runpy.run_path(str(hud), run_name="__main__")
+    return 0
+
 if __name__ == "__main__":
     try:
+        if "--danyria-hud-self-test" in sys.argv:
+            sys.exit(run_embedded_hud(self_test=True))
+        if "--danyria-hud" in sys.argv:
+            sys.exit(run_embedded_hud(self_test=False))
         main()
     except Exception as exc:
         import traceback
-        from pathlib import Path
-        log_path = Path(__file__).resolve().parent / "danyria_crash_log.txt"
-        log_path.write_text(traceback.format_exc(), encoding="utf-8", errors="replace")
+        log_path = base_dir() / "danyria_crash_log.txt"
+        try:
+            log_path.write_text(traceback.format_exc(), encoding="utf-8", errors="replace")
+        except Exception:
+            pass
         try:
             import ctypes
             ctypes.windll.user32.MessageBoxW(

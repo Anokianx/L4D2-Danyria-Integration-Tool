@@ -1,7 +1,7 @@
-# Danyria 1.0.0 开发者文档 / Developer Documentation
+# Danyria 1.1.0 开发者文档 / Developer Documentation
 
 作者 / Author：B站 千早ですわ  
-版本 / Version：1.0.0  
+版本 / Version：1.1.0  
 适用游戏 / Target Game：Left 4 Dead 2
 
 ---
@@ -172,3 +172,77 @@ Also verify:
 
 - The score board now reuses the health HUD entity scan. When the tracked player is attacking and an aimed special infected, Witch, or Tank loses HP, that entity is marked as a personal contribution target before a later death or disappearance can score.
 - Stat-property polling remains disabled for special infected and Tank kills to avoid bot or stale chapter team-stat false positives.
+
+---
+
+## 6. 多人 / 三方服内存桥 / Multiplayer & 3rd-party-server memory bridge
+
+### 中文
+
+**背景**：VScript 只在服务器端运行。你作为客户端加入第三方/专用服时，本机不跑脚本、也读不到服务器硬盘，所以 `ems/*.txt` 遥测拿不到。`server_payload` 里的 `DHUD_SendTelemetryToClient` 当前是空函数，客户端 console 通道也已移除，所以装不了插件的三方服上 HUD 没有数据。
+
+**方案**：在外置 HUD 里加了一个**只读外部内存**数据源（不是 DLL 注入，封号风险更低），直接读《求生之路2》进程内存来画速度表、血量、敌人血量；评分沿用已有的 `_apply_client_score_fallback()` 按状态变化推算（尽力而为）。
+
+- 代码：`payload/danyria_hud/DanyriaHUD.pyw` 内嵌 `L4D2Memory` / `_ProcMem` / `_Netvars`（纯 ctypes，无第三方依赖，打包安全）。
+- 数据源优先级：内存开启时优先用内存；读不到时自动回落到本地 `ems` 文件（本地房主照常可用）。
+- 开关：主程序 HUD 板块与评分板块各有“启用 多人/三方服 内存读取（后果自负）”勾选框，开启时弹**风险确认框**；状态存在 hud 配置的 `memory.enabled`。
+- 偏移：与版本相关的 3 个锚点（local_player / entity_list / class_list）和 netvar 都在 `payload/danyria_hud/danyria_mem_offsets.json`，**默认留空**，需要按你当前 L4D2 版本校准一次。netvar 走 RecvTable 按名自动解析；也支持 `manual_offsets` 手填。
+- 打包后该 json 会落到 `%APPDATA%/Danyria/danyria_hud/`（可写、可改），首次从打包资源播种。
+- 自检：源码 `pythonw DanyriaHUD.pyw --mem-diagnose`，或打包后 `Danyria.exe --danyria-hud --mem-diagnose`；结果写到 `danyria_mem_diagnostic.txt`，含解析到的地址与一次 hp/speed 采样。
+
+**校准（任选一条）**：A) 从公开 L4D2 偏移 dump 把 `dwLocalPlayer/dwEntityList/dwGetAllClasses` 填进 `signatures.*.static`，netvar 自动解析；B) 只填 local_player+entity_list 两个锚点，netvar 偏移粘进 `manual_offsets`；C) 用字节签名 `signatures.*.pattern`（最抗更新）。
+
+**风险**：第三方读取游戏内存，受 VAC 保护的服务器可能判为作弊并封号。仅在可接受后果的服上使用。
+
+### English
+
+VScript runs server-side only, so a joining client on a 3rd-party/dedicated server cannot get `ems/*.txt` telemetry (its scripts don't run and it can't read the server disk; the dedicated→client bridge `DHUD_SendTelemetryToClient` is an empty stub). Added a **read-only external memory** data source (not DLL injection) embedded in `DanyriaHUD.pyw` (`L4D2Memory`, pure ctypes) that reads the L4D2 process directly for speed/HP/enemy-HP; score reuses the existing `_apply_client_score_fallback()` (best effort).
+
+- Memory is the primary source when enabled and falls back to local `ems` files automatically (local host still works).
+- Toggle lives in the HUD panel and the penalty panel ("Enable multiplayer / 3rd-party memory read"), with a mandatory risk-confirmation dialog; persisted as `memory.enabled` in the hud config.
+- Version-specific anchors + netvars live in `danyria_mem_offsets.json` (ships empty, calibrate once per build). Netvars auto-resolve via the RecvTable walk; `manual_offsets` overrides are supported. Frozen builds seed a writable copy under `%APPDATA%/Danyria/danyria_hud/`.
+- Self-check: `--mem-diagnose` (writes `danyria_mem_diagnostic.txt`).
+- Packaging unchanged: only stdlib (`ctypes`/`struct`) added, new json is auto-bundled with `payload`.
+- Risk: reading game memory can be flagged by VAC-secured servers. Use only where you accept the consequences.
+
+### 更新 / Update — 自动化与弹窗修复
+
+- **弹窗修复**：项目里 `QMessageBox` 被替换成自带的 `DanyriaMessageBox`，其 `.warning()` 只有 OK 按钮、永不返回 Yes，导致确认后开关又被取消。改用 `QMessageBox.question()`（是/否，返回 `StandardButton`）。
+- **netvar 全自动**：新增 `find_recvtables_by_string()`——按 RecvTable 名字字符串（`DT_BasePlayer` 等，跨版本不变）+ xref 反查表地址，零配置解析所有 netvar 偏移，**不再需要 class_list 签名，也不需要手填**。
+- 因此终端用户最多只需 **2 个基址**：`local_player`、`entity_list`。只给 `local_player` 也能出速度+血量（优雅降级）。锚点支持**候选数组**，依次尝试。
+- 分发建议：作者在自己机器上校准一次这 2 个 static 偏移，连同 `danyria_mem_offsets.json` 一起发布，**其他人无需任何操作**；L4D2 更新后只需有人重校这 2 个数。
+- English: fixed the confirm dialog (use `question`, not the OK-only `warning`); netvars now auto-resolve by RecvTable name-string xref (no class_list, no manual offsets); end users need at most 2 base pointers; `local_player` alone still yields speed+HP; anchors accept candidate lists. Calibrate the 2 statics once and ship the json so others need nothing.
+
+### 更新 2 / Update 2 — 基址也运行时全自动（真正零配置）
+
+- 进一步去掉手动步骤：`entity_list` 和 `local_player` 现在**运行时自动检测**，`danyria_mem_offsets.json` 可以全空。
+- `entity_list`：扫描 client.dll 的 `.data` 节（`_pe_data_sections` 解析 PE 节表），找到一段步长 0x10 的指针数组，用「指向对象的 vtable 落在 client.dll 范围内」+「实体的 m_iTeamNum/m_iHealth 合理」双重校验确认（`_auto_find_entitylist`/`_validate_entitylist`）。
+- `local_player`：在 `.data` 里找一个值等于某个队伍2幸存者实体指针、且不在实体数组内的独立静态槽——即 dwLocalPlayer（`_auto_find_localplayer`），每帧解引用得到当前本地玩家。
+- 全程不依赖任何字节签名或手填数字，只依赖 Source 引擎固定的结构布局 + 已自动解析的 netvar。扫描限速 3s，进游戏加载地图后自动就绪；`--mem-diagnose` 会强制立刻扫一次并打印结果。
+- 配置里若手填了 static/manual，则优先用手填值（作为大更新后失效时的兜底）。
+- English: base pointers are now auto-detected at runtime too — the json can be entirely empty. entity_list is found by scanning client.dll .data for a stride-0x10 pointer array validated by client.dll-range vtables + sane team/HP netvars; local_player is the standalone .data slot pointing at a team-2 survivor (dwLocalPlayer). No signatures, no numbers. Throttled 3s; ready after loading a map; manual config still wins if provided.
+
+### 更新 3 / Update 3 — 反馈修复（卡死/不触发/评分/翻译）
+
+- **进游戏不触发**：`_static_done` 以前即使 client.dll 还没加载也被置真，导致提前开 HUD 后进游戏永远卡在未就绪。改为只有真正解析出关键 netvar 才算完成；attach 后若缺 client.dll 会限速重扫模块表。现在先开 HUD 再进游戏会自动接上，无需再开关一次。
+- **进游戏偶发把 HUD 卡没**：后台自动扫描是纯 Python 遍历 .data，长时间占着 GIL 把 Qt 绘制线程饿死。修复：① 每次扫描只读一次 client.dll 映像（之前一趟读 3 次，各几十 MB）；② 扫描循环周期性 `time.sleep(0)` 让出 GIL；③ 静态解析/存活检测都加了限速（1.5s / 1s），不再每帧读 30MB 或枚举进程。
+- **第三方服评分错乱**：内存拿不到服务器的击杀/道具/造成伤害等事件归因。改为在内存层算一个【诚实的个人评分】——只用本地玩家可靠状态（受伤/被击倒/死亡，按 default_score_rules 扣分），作为权威值喂入，绕开会被 BOT/团队/敌人列表噪声污染的 `_apply_client_score_fallback` 启发式；拿不到的击杀/道具/造成伤害一律显示 0（诚实，而非错乱）。
+- **翻译**：新加的 UI 文案补齐 8 种语言，集中在 `DanyriaWindow.MEM_TEXT`（key -> {lang: text}）。这也是比旧 i18n「逐条对照」更省事的写法，以后新增文本建议照此集中写。
+- English: fixed (1) pre-start HUD not engaging after the game launches (`_static_done` no longer latches before client.dll/netvars resolve; modules re-enumerated when client.dll is missing); (2) HUD freezing on map load (single image read per scan + periodic `time.sleep(0)` GIL yields + throttled static-resolve/alive checks); (3) scrambled score on 3rd-party servers (see Update 4); (4) added all 8 languages for the new UI strings, centralized in `DanyriaWindow.MEM_TEXT` (the convenient key→{lang:text} pattern).
+
+### 更新 4 / Update 4 — 内存评分用「用户规则」并真正抓取战斗数据
+
+- 之前内存模式把击杀/造成伤害置 0、规则写死，用户反馈在第三方服拿不到正确数据。现重做评分：
+- 新增 `_ScoreEngine`：单次世界扫描 `_scan_world` 收集所有感染者(team3)原始记录（idx/ptr/hp/zombieClass/origin/dist）；逐帧跟踪每个感染者血量；当其掉血且本地玩家「正在开火(m_nButtons&IN_ATTACK，带 0.4s 记忆) + 准星指向它(由 m_angEyeAngles 求前向量，~28° 锥)」时，把这段伤害归因给本人，累加 `damage_done`；该感染者死亡(血量→0 或从表中消失)且 2.5s 内有本人贡献则按 `m_zombieClass` 记为 普感/特感/Witch/Tank 击杀。
+- 评分用**用户在前端配置的规则值**：`load_score_rules()` 读 `danyria_hud_score_rules.txt`（与 hud 配置同目录或 ems），每 ~2s 重载，所以你在软件里改数值即时生效。`penalty_score = 60 + 各项计数 × 你的规则值`。
+- 新增 netvar：`m_nButtons`/`m_angEyeAngles`/`m_vecViewOffset`（同样字符串反查自动解析）。世界扫描限到 ~30Hz。
+- 诚实说明：客户端没有服务器的伤害归因，这是**启发式估算**——团队混战（你和队友/BOT 同时打一个目标）会偏高；救人/吃药/挂边等纯事件仍置 0（内存无法可靠判定）。
+- English: reworked memory-mode scoring to use the **user's configurable rule values** (`load_score_rules()` reads `danyria_hud_score_rules.txt`, reloaded ~2s so front-end edits take effect live) and to actually capture combat. New `_ScoreEngine` + single-pass `_scan_world`: tracks every infected's HP; attributes HP drops to the local player when firing (`m_nButtons & IN_ATTACK`, 0.4s memory) and aiming at it (forward vector from `m_angEyeAngles`, ~28° cone); counts kills by `m_zombieClass` (common/special/witch/tank) and accumulates `damage_done`. Added netvars `m_nButtons`/`m_angEyeAngles`/`m_vecViewOffset`. Honest caveat: client has no server-side damage attribution, so this is a heuristic that over-counts in team play; pure item/revive/ledge events stay 0.
+
+### 更新 5 / Update 5 — UI 精简与可靠性
+
+- 评分板块的「多人/第三方」开关移除；只在 HUD 板块保留**一个**开关，文案就叫「多人/第三方模式」。之前两个开关共用 `memory.enabled`、`_sync_memory_checks` 会联动（开一个另一个跟着开）——移除后不再联动。
+- 删除所有第三方运作说明文案（板块提示标签 `mem_*_hint`、开启后的 `enabled_tip` 弹窗）；风险确认弹窗 `warn_body` 改为只有「后果自负，是否开启？」，不含任何运作方式描述。
+- 开关文案接入 `update_language()`（`mem_enable_check_hud.setText(mem_tr("enable"))`），切换语言时即时刷新——修复"新加文本不翻译"。`MEM_TEXT` 精简为 enable/warn_title/warn_body，仍各含 8 语言。
+- 修复"先开 HUD 再进游戏要再开一遍"：worker 在内存模式下、若一直没出数据，每 8s 自动**重建 L4D2Memory**（等价于手动重开开关），这样后启动的游戏会被自动接上。
+- English: removed the penalty-panel memory toggle (one toggle only, in the HUD panel, labelled "Multiplayer / 3rd-party mode"); the two were synced via `_sync_memory_checks`, now only one exists. Deleted all 3rd-party how-it-works text (hint labels + `enabled_tip` popup); the confirm dialog body is now just "Use at your own risk. Enable?". Hooked the checkbox into `update_language()` so it retranslates on language switch (fixes the "untranslated" report). Fixed "HUD started before the game needs re-toggling": the worker auto-rebuilds `L4D2Memory` every 8s while it has produced no data, so a later-launched game is picked up automatically.
