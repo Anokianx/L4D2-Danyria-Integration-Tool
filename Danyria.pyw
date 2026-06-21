@@ -9432,9 +9432,7 @@ QFrame#ThemedDialogFrame QTextEdit {{
         return self.user_data / "steam_bridge"
 
     def steam_bridge_source_dirs(self) -> list[Path]:
-        # 中文：按可写运行目录、exe 旁边、打包资源目录、源码目录的顺序查找 Steam 桥接组件。
-        # English: Search Steam bridge files from writable runtime dir, exe folder, bundled resources, then source folder.
-        dirs = [
+         dirs = [
             self.steam_bridge_dir(),
             self.base / "steam_bridge",
             self.resource_base / "steam_bridge",
