@@ -246,3 +246,57 @@ VScript runs server-side only, so a joining client on a 3rd-party/dedicated serv
 - 开关文案接入 `update_language()`（`mem_enable_check_hud.setText(mem_tr("enable"))`），切换语言时即时刷新——修复"新加文本不翻译"。`MEM_TEXT` 精简为 enable/warn_title/warn_body，仍各含 8 语言。
 - 修复"先开 HUD 再进游戏要再开一遍"：worker 在内存模式下、若一直没出数据，每 8s 自动**重建 L4D2Memory**（等价于手动重开开关），这样后启动的游戏会被自动接上。
 - English: removed the penalty-panel memory toggle (one toggle only, in the HUD panel, labelled "Multiplayer / 3rd-party mode"); the two were synced via `_sync_memory_checks`, now only one exists. Deleted all 3rd-party how-it-works text (hint labels + `enabled_tip` popup); the confirm dialog body is now just "Use at your own risk. Enable?". Hooked the checkbox into `update_language()` so it retranslates on language switch (fixes the "untranslated" report). Fixed "HUD started before the game needs re-toggling": the worker auto-rebuilds `L4D2Memory` every 8s while it has produced no data, so a later-launched game is picked up automatically.
+
+## 7. 服务器面板 / Server panel
+
+### 中文
+
+- **第四个板块「服务器」**：导航加按钮、`main_stack` 加 `servers_page`。后端 `ServerBrowser`（`Danyria.pyw` 顶部，纯 Python UDP）：`a2s_query_master`(Valve 主服务器) + `a2s_info`/`a2s_players`(A2S 查询) + `a2s_lan_scan`(局域网广播)；后台线程每 3s 刷新，UI 用 1s QTimer 拉 `snapshot()` 实时更新。分类（互联网/局域网/好友）、文本筛选、详情、一键进入（`steam://connect/ip:port` 或好友 `steam://joinlobby`，会自动启动游戏并等加载/创意工坊完成）。
+- **好友**：`steam_friends_servers` 用 ctypes flat API 读 Steam 好友（用 appid **480** 初始化，避免把自己标记成在玩 L4D2），列出正在玩 550 的好友及其可加入地址/lobby。实验性、需 Steam 运行；任何失败都安全返回空。
+- 协议解析做了离线单元测试；Qt 控件/枚举已验证；只用标准库（socket/struct/threading/ctypes），打包无新依赖。**联网/主服务器可达性与 Steam 好友需在你机器上实测**——主服务器协议 Valve 有限速，可能返回有限或为空。
+
+### English
+
+- New 4th "Servers" panel: nav button + `servers_page`. Backend `ServerBrowser` (pure-Python UDP): `a2s_query_master` (Valve master) + `a2s_info`/`a2s_players` + `a2s_lan_scan`; background thread refreshes every 3s, UI polls `snapshot()` via a 1s QTimer. Source categories (internet/LAN/friends), text filter, detail, one-click join (`steam://connect` or friends `steam://joinlobby`, which auto-launches the game and waits for addons). Friends via `steam_friends_servers` (ctypes flat API, inits with appid 480 so it never marks you in-game; experimental, needs Steam running, fails safe to empty). A2S parsing unit-tested; Qt widgets verified; stdlib-only (no new packaging deps). Live behaviour (master-server reachability, Steam) needs on-machine testing — Valve rate-limits the master protocol so the internet list may be limited/empty.
+
+### 更新 / Update — 服务器黑名单 / Server blacklist
+
+**中文**
+
+- 可按**名字关键字**（子串、忽略大小写）和 **IP**（精确或前缀）屏蔽服务器。国内 RPG 服会频繁改显示名来绕过名字过滤，所以 IP 屏蔽更可靠。
+- 存储：`danyria_server_blacklist.json`（与 hud 配置同目录），结构 `{"enabled": bool, "names": [...], "ips": [...]}`（读写 `_srv_load_blacklist` / `_srv_save_blacklist`）。
+- UI：服务器板块加「启用黑名单」勾选框 +「编辑黑名单」按钮（`create_themed_dialog` 统一风格弹窗，关键字/IP 空格分隔）+「拉黑所选」按钮；开启后 `_srv_refresh_table` 用 `_srv_blacklisted` 过滤命中行。
+
+**English**
+
+- Blocks servers by **name keyword** (case-insensitive substring) and by **IP** (exact or prefix). CN "RPG" servers rename their display name constantly to dodge name filters, so IP blocking is the reliable path.
+- Stored in `danyria_server_blacklist.json` next to the hud config, shape `{"enabled": bool, "names": [...], "ips": [...]}` (`_srv_load_blacklist` / `_srv_save_blacklist`).
+- UI: an "enable blacklist" checkbox + an "Edit blacklist" button (themed via `create_themed_dialog`, keywords/IPs space-separated) + a "Block selected" button; when enabled, `_srv_refresh_table` filters matching rows via `_srv_blacklisted`.
+
+---
+
+## 8. HUD 皮肤系统 / HUD skin system
+
+### 中文
+
+- **三套皮肤**，配置键 `hud_style`，在**设置**里用数字下拉选择：`1 经典 classic` / `2 霓虹赛博 acg` / `3 薄荷薰衣草 mint`。`apply_settings` 把选择写进 HUD 配置，HUD 端每帧按 `hud_style` 分流绘制；配色字典 `ACG` / `ACG_MINT` 与经典完全隔离。
+- 三个窗口（`SpeedWindow` / `EnemyWindow` / `PenaltyWindow`）的 `paintEvent` 顶部按皮肤分支，经典逻辑原样保留：
+  - **经典 classic**：原圆角边框（`draw_hud_frame`）+ 圆形表盘 / 指针。
+  - **霓虹赛博 acg**：斜切矩形面板（`draw_angular_panel`：切左上 + 右下两角、直边、单描边、无辉光）、斜体数字、双色斜切进度条（`draw_angular_bar`）、斜切 chip（`draw_angular_chip`）；配色电光青 `#45E0FF` + 品红 `#FF57C7`。敌人为逐个斜切卡片。
+  - **薄荷薰衣草 mint**：圆润极简（`draw_soft_panel` 圆角 + 发丝描边）、◇ 菱形标（`draw_acg_glyph`）、圆点 chip（`draw_soft_chip`，无底框）、细胶囊血条（`draw_soft_bar`）；配色薄荷 `#7CE0D4` + 薰衣草 `#B79CFF` + 天蓝 `#7FC7FF`。
+- **敌人血条排布（仅薄荷）**：每个敌人一张**独立卡片**（自己出现 / 自己消失，和霓虹一致）；单卡内「名字 + 当前/最大血量」一行、胶囊血条、底部「百分比(左) / 距离(右)」。
+- **拖动**：取消整窗拖拽，改为右上角 `DragGrip` 拖拽点（18×18 圆点子控件）。
+- **缩放**：取消鼠标拖拽放大，改为每个插件板块的 `scale` 数值（0.3–4.0）；`sync_window` 按 `scale × 逻辑尺寸` 建窗。
+- 修复敌人窗口建窗高度（`76+n×58`）与绘制逻辑高度（`60+n×58`）不一致导致的纵向拉伸，现已一致。
+
+### English
+
+- **Three skins**, config key `hud_style`, chosen in **Settings** via a numeric combo: `1 classic` / `2 acg (neon cyber)` / `3 mint (mint lavender)`. `apply_settings` writes the choice to the HUD config; the HUD dispatches per `hud_style` each frame. Palette dicts `ACG` / `ACG_MINT` are fully isolated from the classic skin.
+- Each window (`SpeedWindow` / `EnemyWindow` / `PenaltyWindow`) branches at the top of `paintEvent`, classic path untouched:
+  - **classic**: original rounded frame (`draw_hud_frame`) + circular gauge / needle.
+  - **acg (neon)**: chamfered-rectangle panels (`draw_angular_panel` — top-left + bottom-right corners cut, straight edges, single border, no glow), italic numbers, two-tone slanted bars (`draw_angular_bar`), slanted chips (`draw_angular_chip`); electric cyan `#45E0FF` + magenta `#FF57C7`. Enemies are per-enemy angular cards.
+  - **mint**: soft / minimal (`draw_soft_panel` rounded + hairline border), ◇ diamond glyph (`draw_acg_glyph`), dot chips (`draw_soft_chip`, no box), thin pill bars (`draw_soft_bar`); mint `#7CE0D4` + lavender `#B79CFF` + sky `#7FC7FF`.
+- **Enemy HP row (mint only)**: each enemy is an **independent card** (appears / disappears on its own, like neon); inside, "name + current/max HP" on the top line, a pill bar, then "percent (left) / distance (right)".
+- **Drag**: whole-window drag removed in favour of a top-right `DragGrip` handle (18×18 dot child widget).
+- **Scale**: mouse drag-resize removed; each plugin panel has a `scale` value (0.3–4.0); `sync_window` builds the window at `scale × logical size`.
+- Fixed the enemy window being created at `76+n*58` while painting at `60+n*58`, which stretched it vertically; the two now match.

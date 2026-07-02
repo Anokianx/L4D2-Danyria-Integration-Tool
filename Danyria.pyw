@@ -12,6 +12,7 @@ import json
 import time
 import locale
 import struct
+import socket
 import shutil
 import subprocess
 import runpy
@@ -65,11 +66,614 @@ NativeQMessageBox = QMessageBox
 # Application constants and file-format constants.
 # ---------------------------------------------------------------------------
 APP_NAME = "Danyria"
-APP_VERSION = "1.1.0 Experimental"
+APP_VERSION = "1.2.1"
 CONFIG_NAME = "danyria_config.json"
 VPK_MAGIC = 0x55AA1234
 DIR_INDEX = 0x7FFF
 L4D2_APP_ID = "550"
+
+
+# ===========================================================================
+# 服务器面板后端：A2S / Valve 主服务器查询（纯 Python UDP，无第三方依赖）。
+# Server panel backend: A2S queries + Valve master server (pure-Python UDP).
+# 协议是公开标准；解析逻辑可离线单元测试。主服务器是否可达/限速需联网验证。
+# ===========================================================================
+A2S_VALVE_MASTER = ("hl2master.steampowered.com", 27011)
+A2S_LAN_PORTS = (27015, 27016, 27017, 27018, 27019, 27020)
+
+
+def _a2s_read_cstr(buf, i):
+    j = buf.index(b"\x00", i)
+    return buf[i:j].decode("utf-8", "replace"), j + 1
+
+
+def parse_a2s_info(payload, ip="", port=0, ping=0):
+    try:
+        b = payload
+        i = 0
+        i += 1 
+        name, i = _a2s_read_cstr(b, i)
+        mp, i = _a2s_read_cstr(b, i)
+        folder, i = _a2s_read_cstr(b, i)
+        game, i = _a2s_read_cstr(b, i)
+        appid = struct.unpack("<H", b[i:i + 2])[0]; i += 2
+        players = b[i]; i += 1
+        maxp = b[i]; i += 1
+        bots = b[i]; i += 1
+        return {
+            "ip": ip, "port": port, "addr": "%s:%d" % (ip, port),
+            "name": name.strip() or "(unnamed)", "map": mp, "folder": folder,
+            "game": game, "appid": appid, "players": players, "max": maxp,
+            "bots": bots, "ping": ping,
+        }
+    except Exception:
+        return None
+
+
+def a2s_info(ip, port, timeout=1.2):
+    payload = b"\xff\xff\xff\xffTSource Engine Query\x00"
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(timeout)
+        t0 = time.time()
+        s.sendto(payload, (ip, port))
+        data, _ = s.recvfrom(8192)
+        if data[4:5] == b"\x41":  
+            s.sendto(payload + data[5:9], (ip, port))
+            data, _ = s.recvfrom(8192)
+        ping = int((time.time() - t0) * 1000)
+        s.close()
+        if data[4:5] != b"\x49":
+            return None
+        return parse_a2s_info(data[5:], ip, port, ping)
+    except Exception:
+        return None
+
+
+def a2s_players(ip, port, timeout=1.2):
+    head = b"\xff\xff\xff\xff\x55"
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(timeout)
+        s.sendto(head + b"\xff\xff\xff\xff", (ip, port))
+        data, _ = s.recvfrom(8192)
+        if data[4:5] == b"\x41":
+            s.sendto(head + data[5:9], (ip, port))
+            data, _ = s.recvfrom(8192)
+        s.close()
+        if data[4:5] != b"\x44":
+            return []
+        b = data[5:]
+        cnt = b[0]; i = 1
+        out = []
+        for _ in range(cnt):
+            i += 1 
+            nm, i = _a2s_read_cstr(b, i)
+            score = struct.unpack("<i", b[i:i + 4])[0]; i += 4
+            dur = struct.unpack("<f", b[i:i + 4])[0]; i += 4
+            out.append({"name": nm, "score": score, "time": dur})
+        return out
+    except Exception:
+        return []
+
+
+def a2s_query_master(appid=550, region=0xFF, timeout=3.0, max_servers=400):
+    out = []
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(timeout)
+        last = "0.0.0.0:0"
+        flt = ("\\appid\\%d" % appid).encode()
+        seen = set()
+        while len(out) < max_servers:
+            req = b"\x31" + bytes([region]) + last.encode() + b"\x00" + flt + b"\x00"
+            s.sendto(req, A2S_VALVE_MASTER)
+            data, _ = s.recvfrom(8192)
+            if data[:6] != b"\xff\xff\xff\xff\x66\x0a":
+                break
+            body = data[6:]
+            ended = False
+            for k in range(len(body) // 6):
+                chunk = body[k * 6:k * 6 + 6]
+                ip = ".".join(str(x) for x in chunk[:4])
+                port = struct.unpack(">H", chunk[4:6])[0]
+                if ip == "0.0.0.0" and port == 0:
+                    ended = True
+                    break
+                key = (ip, port)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(key)
+                last = "%s:%d" % (ip, port)
+            if ended:
+                break
+        s.close()
+    except Exception:
+        pass
+    return out
+
+
+def _local_broadcast_addrs():
+    targets = ["255.255.255.255"]
+    try:
+        for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
+            if ip.startswith("127.") or ":" in ip:
+                continue
+            parts = ip.split(".")
+            if len(parts) == 4:
+                bc = "%s.%s.%s.255" % (parts[0], parts[1], parts[2])
+                if bc not in targets:
+                    targets.append(bc)
+    except Exception:
+        pass
+    return targets
+
+
+def a2s_lan_scan(timeout=1.2):
+    found = []
+    payload = b"\xff\xff\xff\xffTSource Engine Query\x00"
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        s.settimeout(timeout)
+        for bc in _local_broadcast_addrs():
+            for port in A2S_LAN_PORTS:
+                try:
+                    s.sendto(payload, (bc, port))
+                except Exception:
+                    pass
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            try:
+                data, addr = s.recvfrom(8192)
+            except socket.timeout:
+                break
+            except Exception:
+                break
+            if data[4:5] == b"\x49":
+                info = parse_a2s_info(data[5:], addr[0], addr[1], int((time.time() - t0) * 1000))
+                if info:
+                    info["source"] = "lan"
+                    found.append(info)
+        s.close()
+    except Exception:
+        pass
+    return found
+
+
+_STEAM = {"ok": False, "lib": None, "friends": None, "mms": None, "reason": "not started", "next_try": 0.0, "appid": ""}
+
+
+def steam_status_reason():
+    return _STEAM.get("reason", "")
+
+
+def _steam_try_init(dll_dirs):
+    if _STEAM["ok"]:
+        return True
+    now = time.time()
+    if now < _STEAM["next_try"]:
+        return False
+    _STEAM["next_try"] = now + 4.0
+    if sys.platform != "win32":
+        _STEAM["reason"] = "not windows"
+        return False
+    import ctypes
+    dll = None
+    for d in dll_dirs or []:
+        try:
+            p = Path(d) / "steam_api64.dll"
+            if p.exists():
+                dll = p
+                break
+        except Exception:
+            pass
+    if not dll:
+        _STEAM["reason"] = "steam_api64.dll not found in bridge folders"
+        return False
+    cwd0 = os.getcwd()
+    try:
+        os.chdir(str(dll.parent))
+        try:
+            lib = _STEAM["lib"] or ctypes.CDLL(str(dll))
+        except Exception as exc:
+            _STEAM["reason"] = "load steam_api64.dll failed: %s" % exc
+            return False
+        _STEAM["lib"] = lib
+        init_old = init_flat = None
+        try:
+            init_old = lib.SteamAPI_Init
+            init_old.restype = ctypes.c_bool
+        except Exception:
+            init_old = None
+        try:
+            init_flat = lib.SteamAPI_InitFlat
+            init_flat.restype = ctypes.c_int
+            init_flat.argtypes = [ctypes.c_char_p]
+        except Exception:
+            init_flat = None
+        if init_old is None and init_flat is None:
+            _STEAM["reason"] = "steam_api64.dll has no SteamAPI_Init/SteamAPI_InitFlat export"
+            return False
+
+        def _do_init():
+            if init_old is not None:
+                try:
+                    if bool(init_old()):
+                        return True
+                except Exception:
+                    pass
+            if init_flat is not None:
+                try:
+                    errbuf = ctypes.create_string_buffer(1024)
+                    r = int(init_flat(errbuf))
+                    if r == 0:
+                        return True
+                    _STEAM["reason"] = "InitFlat result=%d: %s" % (r, errbuf.value.decode("utf-8", "replace"))
+                except Exception as exc:
+                    _STEAM["reason"] = "InitFlat exception: %s" % exc
+            return False
+
+        inited = False
+        for appid in ("480", "550"):
+            try:
+                (dll.parent / "steam_appid.txt").write_text(appid, encoding="utf-8")
+            except Exception:
+                pass
+            os.environ["SteamAppId"] = appid
+            os.environ["SteamGameId"] = appid
+            if _do_init():
+                inited = True
+                _STEAM["appid"] = appid
+                break
+        if not inited:
+            avail = "/".join([n for n, v in (("Init", init_old), ("InitFlat", init_flat)) if v is not None])
+            if "result=" not in _STEAM.get("reason", "") and "exception" not in _STEAM.get("reason", ""):
+                _STEAM["reason"] = "SteamAPI_%s failed (480 & 550) — Steam running & logged in? open Danyria after Steam" % avail
+            return False
+        def _valid_iface(p):
+            if not p:
+                return False
+            try:
+                vtbl = ctypes.cast(ctypes.c_void_p(p), ctypes.POINTER(ctypes.c_void_p))[0]
+                return bool(vtbl)
+            except Exception:
+                return False
+
+        fr = None
+        for nver in range(14, 30):
+            try:
+                f = getattr(lib, "SteamAPI_SteamFriends_v%03d" % nver)
+            except Exception:
+                continue
+            try:
+                f.restype = ctypes.c_void_p
+                f.argtypes = []
+                cand = f()
+            except Exception:
+                cand = None
+            if _valid_iface(cand):
+                fr = cand
+                break
+        if not fr:
+            try:
+                lib.SteamAPI_GetHSteamUser.restype = ctypes.c_int
+                huser = lib.SteamAPI_GetHSteamUser()
+                lib.SteamInternal_FindOrCreateUserInterface.restype = ctypes.c_void_p
+                lib.SteamInternal_FindOrCreateUserInterface.argtypes = [ctypes.c_int, ctypes.c_char_p]
+                for nver in range(14, 30):
+                    try:
+                        cand = lib.SteamInternal_FindOrCreateUserInterface(huser, ("SteamFriends%03d" % nver).encode())
+                    except Exception:
+                        cand = None
+                    if _valid_iface(cand):
+                        fr = cand
+                        break
+            except Exception:
+                pass
+        if not fr:
+            _STEAM["reason"] = "Init OK (appid %s) but no valid SteamFriends interface" % _STEAM["appid"]
+            return False
+        try:
+            lib.SteamAPI_ISteamFriends_GetFriendCount.restype = ctypes.c_int
+            lib.SteamAPI_ISteamFriends_GetFriendCount.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            lib.SteamAPI_ISteamFriends_GetFriendByIndex.restype = ctypes.c_uint64
+            lib.SteamAPI_ISteamFriends_GetFriendByIndex.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+            lib.SteamAPI_ISteamFriends_GetFriendPersonaName.restype = ctypes.c_char_p
+            lib.SteamAPI_ISteamFriends_GetFriendPersonaName.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
+            lib.SteamAPI_ISteamFriends_GetFriendRichPresence.restype = ctypes.c_char_p
+            lib.SteamAPI_ISteamFriends_GetFriendRichPresence.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p]
+            lib.SteamAPI_ISteamFriends_GetFriendGamePlayed.restype = ctypes.c_bool
+        except Exception as exc:
+            _STEAM["reason"] = "binding friends functions failed: %s" % exc
+            return False
+        _STEAM["friends"] = fr
+        _STEAM["ok"] = True
+        _STEAM["reason"] = "connected (appid %s)" % _STEAM["appid"]
+        return True
+    finally:
+        try:
+            os.chdir(cwd0)
+        except Exception:
+            pass
+
+
+def steam_friends_servers(dll_dirs):
+    if not _steam_try_init(dll_dirs):
+        return []
+    try:
+        import ctypes
+
+        class _FriendGameInfo(ctypes.Structure):
+            _fields_ = [("m_gameID", ctypes.c_uint64), ("m_unGameIP", ctypes.c_uint32),
+                        ("m_usGamePort", ctypes.c_uint16), ("m_usQueryPort", ctypes.c_uint16),
+                        ("m_steamIDLobby", ctypes.c_uint64)]
+
+        lib = _STEAM["lib"]
+        fr = _STEAM["friends"]
+        lib.SteamAPI_ISteamFriends_GetFriendGamePlayed.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.POINTER(_FriendGameInfo)]
+        K_IMMEDIATE = 0x04
+        n = lib.SteamAPI_ISteamFriends_GetFriendCount(fr, K_IMMEDIATE)
+        out = []
+        for i in range(max(0, int(n))):
+            try:
+                sid = lib.SteamAPI_ISteamFriends_GetFriendByIndex(fr, i, K_IMMEDIATE)
+                gi = _FriendGameInfo()
+                if not lib.SteamAPI_ISteamFriends_GetFriendGamePlayed(fr, sid, ctypes.byref(gi)):
+                    continue
+                if (gi.m_gameID & 0xFFFFFF) != 550:
+                    continue
+                nm = lib.SteamAPI_ISteamFriends_GetFriendPersonaName(fr, sid) or b""
+                addr = ""
+                if gi.m_unGameIP:
+                    ip = "%d.%d.%d.%d" % ((gi.m_unGameIP >> 24) & 255, (gi.m_unGameIP >> 16) & 255,
+                                          (gi.m_unGameIP >> 8) & 255, gi.m_unGameIP & 255)
+                    addr = "%s:%d" % (ip, gi.m_usGamePort)
+                conn = lib.SteamAPI_ISteamFriends_GetFriendRichPresence(fr, sid, b"connect") or b""
+                out.append({
+                    "source": "friend",
+                    "name": nm.decode("utf-8", "replace"),
+                    "addr": addr, "connect": conn.decode("utf-8", "replace"),
+                    "lobby": int(gi.m_steamIDLobby), "steamid": int(sid),
+                    "map": "", "players": 0, "max": 0, "ping": 0,
+                })
+            except Exception:
+                continue
+        _STEAM["reason"] = "connected (appid %s)" % _STEAM.get("appid", "?")
+        return out
+    except Exception as exc:
+        _STEAM["reason"] = "read friends failed: %s" % exc
+        return []
+
+
+def _steam_valid_iface(p):
+    if not p:
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.cast(ctypes.c_void_p(p), ctypes.POINTER(ctypes.c_void_p))[0])
+    except Exception:
+        return False
+
+
+def _steam_get_mms(dll_dirs):
+    if not _steam_try_init(dll_dirs):
+        return None
+    if _STEAM.get("mms"):
+        return _STEAM["mms"]
+    import ctypes
+    lib = _STEAM["lib"]
+    mms = None
+    for nver in range(1, 6):
+        f = None
+        for name in ("SteamAPI_SteamMatchmakingServers_v%03d" % nver,
+                     "SteamAPI_SteamMatchMakingServers_v%03d" % nver):
+            try:
+                f = getattr(lib, name)
+                break
+            except Exception:
+                f = None
+        if f is None:
+            continue
+        try:
+            f.restype = ctypes.c_void_p
+            f.argtypes = []
+            cand = f()
+        except Exception:
+            cand = None
+        if _steam_valid_iface(cand):
+            mms = cand
+            break
+    if not mms:
+        try:
+            lib.SteamAPI_GetHSteamUser.restype = ctypes.c_int
+            huser = lib.SteamAPI_GetHSteamUser()
+            lib.SteamInternal_FindOrCreateUserInterface.restype = ctypes.c_void_p
+            lib.SteamInternal_FindOrCreateUserInterface.argtypes = [ctypes.c_int, ctypes.c_char_p]
+            for nver in range(1, 6):
+                try:
+                    cand = lib.SteamInternal_FindOrCreateUserInterface(huser, ("SteamMatchMakingServers%03d" % nver).encode())
+                except Exception:
+                    cand = None
+                if _steam_valid_iface(cand):
+                    mms = cand
+                    break
+        except Exception:
+            pass
+    _STEAM["mms"] = mms
+    return mms
+
+
+def steam_server_addrs(dll_dirs, appid=550, timeout=8.0, max_servers=400):
+    import ctypes
+    mms = _steam_get_mms(dll_dirs)
+    if not mms:
+        return []
+    lib = _STEAM["lib"]
+    try:
+        lib.SteamAPI_ISteamMatchmakingServers_GetServerDetails.restype = ctypes.c_void_p
+        lib.SteamAPI_ISteamMatchmakingServers_GetServerDetails.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+        lib.SteamAPI_ISteamMatchmakingServers_RequestInternetServerList.restype = ctypes.c_void_p
+        lib.SteamAPI_ISteamMatchmakingServers_RequestInternetServerList.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p]
+        lib.SteamAPI_ISteamMatchmakingServers_ReleaseRequest.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        try:
+            lib.SteamAPI_RunCallbacks.restype = None
+        except Exception:
+            pass
+    except Exception as exc:
+        _STEAM["reason"] = "matchmaking bind failed: %s" % exc
+        return []
+    addrs = []
+    done = [False]
+
+    def details(hreq, iserver):
+        try:
+            p = lib.SteamAPI_ISteamMatchmakingServers_GetServerDetails(mms, hreq, iserver)
+            if p:
+                b = (ctypes.c_ubyte * 8).from_address(p)
+                connport = b[0] | (b[1] << 8)
+                queryport = b[2] | (b[3] << 8)
+                ipv = b[4] | (b[5] << 8) | (b[6] << 16) | (b[7] << 24)
+                ip = "%d.%d.%d.%d" % ((ipv >> 24) & 255, (ipv >> 16) & 255, (ipv >> 8) & 255, ipv & 255)
+                port = queryport or connport
+                if ip != "0.0.0.0" and port:
+                    addrs.append((ip, port))
+        except Exception:
+            pass
+
+    CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int)
+    cb_resp = CB(lambda this, h, i: details(h, i))
+    cb_fail = CB(lambda this, h, i: None)
+    cb_done = CB(lambda this, h, r: done.__setitem__(0, True))
+    vt = (ctypes.c_void_p * 3)(ctypes.cast(cb_resp, ctypes.c_void_p),
+                               ctypes.cast(cb_fail, ctypes.c_void_p),
+                               ctypes.cast(cb_done, ctypes.c_void_p))
+    obj = (ctypes.c_void_p * 1)(ctypes.addressof(vt))
+    try:
+        hreq = lib.SteamAPI_ISteamMatchmakingServers_RequestInternetServerList(mms, appid, None, 0, ctypes.addressof(obj))
+    except Exception as exc:
+        _STEAM["reason"] = "RequestInternetServerList failed: %s" % exc
+        return []
+    if not hreq:
+        return []
+    t0 = time.time()
+    while not done[0] and time.time() - t0 < timeout and len(addrs) < max_servers:
+        try:
+            lib.SteamAPI_RunCallbacks()
+        except Exception:
+            break
+        time.sleep(0.05)
+    try:
+        lib.SteamAPI_ISteamMatchmakingServers_ReleaseRequest(mms, hreq)
+    except Exception:
+        pass
+    return addrs
+
+
+class ServerBrowser:
+
+    def __init__(self, steam_dll_dirs=None):
+        self.lock = threading.Lock()
+        self.servers = {}         
+        self.friends = []
+        self.mode = "friends"     
+        self.status = ""
+        self.dirty = True
+        self.stop_event = threading.Event()
+        self._thread = None
+        self._master = []
+        self._master_t = 0.0
+        self._steam_dll_dirs = steam_dll_dirs or []
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self.stop_event.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self.stop_event.set()
+
+    def set_mode(self, mode):
+        with self.lock:
+            if mode == self.mode:
+                return
+            self.mode = mode
+            self.servers.clear()
+            self.friends = []
+            self._master = []
+            self._master_t = 0.0
+            self.status = "switching…"
+            self.dirty = True
+
+    def snapshot(self):
+        with self.lock:
+            self.dirty = False
+            return list(self.servers.values()), list(self.friends), self.status
+
+    def _run(self):
+        from concurrent.futures import ThreadPoolExecutor
+        while not self.stop_event.is_set():
+            mode = self.mode
+            try:
+                if mode == "internet":
+                    now = time.time()
+                    if now - self._master_t > 120:
+                        with self.lock:
+                            self.status = "fetching server list via Steam…"
+                            self.dirty = True
+                        addrs = steam_server_addrs(self._steam_dll_dirs)
+                        if not addrs:
+                            addrs = a2s_query_master(550)
+                        self._master = addrs
+                        self._master_t = now
+                        if not self._master:
+                            with self.lock:
+                                self.status = "internet list empty — " + (steam_status_reason() if not _STEAM["ok"] else "Steam returned no servers and Valve master unreachable")
+                                self.dirty = True
+                    batch = self._master[:90]
+                    results = {}
+                    if batch:
+                        try:
+                            with ThreadPoolExecutor(max_workers=24) as ex:
+                                for info in ex.map(lambda ap: a2s_info(ap[0], ap[1]), batch):
+                                    if info and info.get("appid") == 550:
+                                        info["source"] = "internet"
+                                        results[info["addr"]] = info
+                        except Exception:
+                            pass
+                    if results:
+                        with self.lock:
+                            if self.mode == "internet":
+                                self.servers.update(results)
+                                self.status = "internet servers: %d" % len(self.servers)
+                                self.dirty = True
+                elif mode == "lan":
+                    lan = a2s_lan_scan()
+                    with self.lock:
+                        if self.mode == "lan":
+                            for info in lan:
+                                self.servers[info["addr"]] = info
+                            self.status = "LAN servers: %d" % len(self.servers)
+                            self.dirty = True
+                elif mode == "friends":
+                    fr = steam_friends_servers(self._steam_dll_dirs)
+                    with self.lock:
+                        if self.mode == "friends":
+                            self.friends = fr
+                            if not _STEAM["ok"]:
+                                self.status = "Steam: " + steam_status_reason()
+                            elif not fr:
+                                self.status = "Steam %s — no friends in L4D2 right now" % steam_status_reason()
+                            else:
+                                self.status = "friends in L4D2: %d (%s)" % (len(fr), steam_status_reason())
+                            self.dirty = True
+            except Exception as exc:
+                with self.lock:
+                    self.status = "error: %s" % exc
+            self.stop_event.wait(3.0 if mode != "friends" else 5.0)
 
 # ---------------------------------------------------------------------------
 # 主题调色板，分别描述布景之形和幻灭之形界面颜色。
@@ -3329,6 +3933,244 @@ I18N_WORKSHOP = {
 I18N = _merge_i18n_pack(I18N, I18N_WORKSHOP)
 
 
+I18N_LANG_FILL = {
+    "ja": {
+        "detail_workshop_manage": "管理のヒント",
+        "kind_Workshop": "ワークショップ項目",
+        "mod_group_local": "ローカルファイル",
+        "mod_group_selected": "選択項目",
+        "mod_group_steam": "Steam 連携",
+        "mod_group_workshop": "ワークショップ",
+        "status_Missing": "サブスク済み / ローカルファイル欠落",
+        "status_Subscribed": "サブスク済み",
+        "steam_bridge_failed": "Steam 連携が完了しませんでした。",
+        "steam_connect": "Steam に接続",
+        "steam_direct_failed": "Steam 連携が完了しませんでした：{reason}",
+        "steam_direct_unsubscribe": "Steam でサブスク解除",
+        "steam_init_failed": "Steam の初期化に失敗しました。Steam が起動・ログインしているか確認してください。",
+        "steam_missing_api": "Steam API コンポーネントが見つかりません。Left 4 Dead 2 のパスを設定するか Steam を起動してから、環境チェックを再実行してください。",
+        "steam_status_bridge_missing": "Steam 連携コンポーネントが準備できていません。",
+        "steam_status_connected": "Steam：接続済み",
+        "steam_status_not_running": "Steam：未接続",
+        "steam_ugc_failed": "Steam UGC インターフェースを利用できません。",
+        "sync_workshop": "ワークショップを同期",
+        "workshop_history_clear": "履歴を消去",
+        "workshop_history_close": "閉じる",
+        "workshop_history_empty": "サブスク解除の履歴はありません。",
+        "workshop_history_restore_tip": "履歴にはワークショップ ID・名称・パス・日時が保存されます。項目を選ぶとページを開く・再サブスク・記録の削除ができます。",
+        "workshop_history_saved": "サブスク解除履歴に保存しました：{n} 件。",
+        "workshop_manage_hint": "サブスク操作はまず Danyria の Steam 連携経由で実行されます。サブスク解除は記録され、後で復元できます。",
+        "workshop_open_subscriptions": "サブスク一覧を開く",
+        "workshop_subscribe_done": "Steam にサブスク要求を送信しました：{n} 件。",
+        "workshop_sync_done": "ワークショップを同期しました：一覧に {n} 件のワークショップ項目があります。",
+        "workshop_unsubscribe_done": "Steam にサブスク解除要求を送信しました：{n} 件。"
+    },
+    "ko": {
+        "detail_workshop_manage": "관리 팁",
+        "kind_Workshop": "창작마당 항목",
+        "mod_group_local": "로컬 파일",
+        "mod_group_selected": "선택 항목",
+        "mod_group_steam": "Steam 연동",
+        "mod_group_workshop": "창작마당",
+        "status_Missing": "구독함 / 로컬 파일 없음",
+        "status_Subscribed": "구독함",
+        "steam_bridge_failed": "Steam 연동이 완료되지 않았습니다.",
+        "steam_connect": "Steam 연결",
+        "steam_direct_failed": "Steam 연동이 완료되지 않았습니다: {reason}",
+        "steam_direct_unsubscribe": "Steam 구독 취소",
+        "steam_init_failed": "Steam 초기화에 실패했습니다. Steam이 실행 중이고 로그인되어 있는지 확인하세요.",
+        "steam_missing_api": "Steam API 구성요소를 찾을 수 없습니다. Left 4 Dead 2 경로를 설정하거나 Steam을 실행한 후 환경 점검을 다시 실행하세요.",
+        "steam_status_bridge_missing": "Steam 연동 구성요소가 준비되지 않았습니다.",
+        "steam_status_connected": "Steam: 연결됨",
+        "steam_status_not_running": "Steam: 연결 안 됨",
+        "steam_ugc_failed": "Steam UGC 인터페이스를 사용할 수 없습니다.",
+        "sync_workshop": "창작마당 동기화",
+        "workshop_history_clear": "기록 지우기",
+        "workshop_history_close": "닫기",
+        "workshop_history_empty": "구독 취소 기록이 없습니다.",
+        "workshop_history_restore_tip": "기록에는 창작마당 ID, 이름, 경로, 시간이 저장됩니다. 항목을 선택해 페이지 열기, 재구독, 기록 삭제를 할 수 있습니다.",
+        "workshop_history_saved": "구독 취소 기록에 저장됨: {n}개.",
+        "workshop_manage_hint": "구독 작업은 먼저 Danyria Steam 연동을 통해 실행됩니다. 구독 취소는 기록되며 나중에 복원할 수 있습니다.",
+        "workshop_open_subscriptions": "구독 목록 열기",
+        "workshop_subscribe_done": "Steam에 구독 요청을 보냈습니다: {n}개.",
+        "workshop_sync_done": "창작마당 동기화 완료: 목록에 {n}개의 창작마당 항목이 있습니다.",
+        "workshop_unsubscribe_done": "Steam에 구독 취소 요청을 보냈습니다: {n}개."
+    },
+    "ru": {
+        "detail_workshop_manage": "Подсказка по управлению",
+        "kind_Workshop": "Элемент мастерской",
+        "mod_group_local": "Локальные файлы",
+        "mod_group_selected": "Выбранный элемент",
+        "mod_group_steam": "Связь со Steam",
+        "mod_group_workshop": "Мастерская",
+        "status_Missing": "Подписан / нет локального файла",
+        "status_Subscribed": "Подписан",
+        "steam_bridge_failed": "Связь со Steam не завершена.",
+        "steam_connect": "Подключить Steam",
+        "steam_direct_failed": "Связь со Steam не завершена: {reason}",
+        "steam_direct_unsubscribe": "Отписаться через Steam",
+        "steam_init_failed": "Не удалось инициализировать Steam. Убедитесь, что Steam запущен и выполнен вход.",
+        "steam_missing_api": "Компонент Steam API не найден. Укажите путь к Left 4 Dead 2 или запустите Steam, затем повторите проверку окружения.",
+        "steam_status_bridge_missing": "Компонент связи со Steam не готов.",
+        "steam_status_connected": "Steam: подключено",
+        "steam_status_not_running": "Steam: не подключено",
+        "steam_ugc_failed": "Интерфейс Steam UGC недоступен.",
+        "sync_workshop": "Синхронизировать мастерскую",
+        "workshop_history_clear": "Очистить историю",
+        "workshop_history_close": "Закрыть",
+        "workshop_history_empty": "Истории отписок пока нет.",
+        "workshop_history_restore_tip": "В истории хранятся ID, название, путь и время элемента мастерской. Выберите элементы, чтобы открыть страницы, переподписаться или удалить записи.",
+        "workshop_history_saved": "Сохранено в историю отписок: {n} шт.",
+        "workshop_manage_hint": "Действия с подпиской выполняются через связь Danyria со Steam. Отписки записываются и могут быть восстановлены позже.",
+        "workshop_open_subscriptions": "Открыть подписки",
+        "workshop_subscribe_done": "Запрос на подписку отправлен в Steam: {n} шт.",
+        "workshop_sync_done": "Мастерская синхронизирована: в списке {n} элемент(ов) мастерской.",
+        "workshop_unsubscribe_done": "Запрос на отписку отправлен в Steam: {n} шт."
+    },
+    "de": {
+        "detail_workshop_manage": "Verwaltungshinweis",
+        "kind_Workshop": "Workshop-Element",
+        "mod_group_local": "Lokale Dateien",
+        "mod_group_selected": "Ausgewähltes Element",
+        "mod_group_steam": "Steam-Anbindung",
+        "mod_group_workshop": "Workshop",
+        "status_Missing": "Abonniert / lokale Datei fehlt",
+        "status_Subscribed": "Abonniert",
+        "steam_bridge_failed": "Steam-Anbindung nicht abgeschlossen.",
+        "steam_connect": "Mit Steam verbinden",
+        "steam_direct_failed": "Steam-Anbindung nicht abgeschlossen: {reason}",
+        "steam_direct_unsubscribe": "In Steam abbestellen",
+        "steam_init_failed": "Steam-Initialisierung fehlgeschlagen. Stellen Sie sicher, dass Steam läuft und angemeldet ist.",
+        "steam_missing_api": "Steam-API-Komponente nicht gefunden. Legen Sie den Left-4-Dead-2-Pfad fest oder starten Sie Steam und führen Sie die Umgebungsprüfung erneut aus.",
+        "steam_status_bridge_missing": "Steam-Anbindungskomponente ist nicht bereit.",
+        "steam_status_connected": "Steam: verbunden",
+        "steam_status_not_running": "Steam: getrennt",
+        "steam_ugc_failed": "Steam-UGC-Schnittstelle ist nicht verfügbar.",
+        "sync_workshop": "Workshop synchronisieren",
+        "workshop_history_clear": "Verlauf löschen",
+        "workshop_history_close": "Schließen",
+        "workshop_history_empty": "Noch kein Abbestell-Verlauf.",
+        "workshop_history_restore_tip": "Der Verlauf speichert Workshop-ID, Titel, Pfad und Zeit. Wählen Sie Einträge, um Seiten zu öffnen, erneut zu abonnieren oder Einträge zu löschen.",
+        "workshop_history_saved": "Im Abbestell-Verlauf gespeichert: {n} Element(e).",
+        "workshop_manage_hint": "Abo-Aktionen laufen zuerst über die Danyria-Steam-Anbindung. Abbestellungen werden aufgezeichnet und können später wiederhergestellt werden.",
+        "workshop_open_subscriptions": "Abonnements öffnen",
+        "workshop_subscribe_done": "Abo-Anfrage an Steam gesendet: {n} Element(e).",
+        "workshop_sync_done": "Workshop synchronisiert: {n} Workshop-Element(e) werden jetzt aufgelistet.",
+        "workshop_unsubscribe_done": "Abbestell-Anfrage an Steam gesendet: {n} Element(e)."
+    },
+    "fr": {
+        "detail_workshop_manage": "Conseil de gestion",
+        "kind_Workshop": "Élément du Workshop",
+        "mod_group_local": "Fichiers locaux",
+        "mod_group_selected": "Élément sélectionné",
+        "mod_group_steam": "Liaison Steam",
+        "mod_group_workshop": "Workshop",
+        "status_Missing": "Abonné / fichier local manquant",
+        "status_Subscribed": "Abonné",
+        "steam_bridge_failed": "La liaison Steam ne s'est pas terminée.",
+        "steam_connect": "Connecter Steam",
+        "steam_direct_failed": "La liaison Steam ne s'est pas terminée : {reason}",
+        "steam_direct_unsubscribe": "Se désabonner via Steam",
+        "steam_init_failed": "Échec de l'initialisation de Steam. Assurez-vous que Steam est lancé et connecté.",
+        "steam_missing_api": "Composant de l'API Steam introuvable. Définissez le chemin de Left 4 Dead 2 ou lancez Steam, puis relancez la vérification de l'environnement.",
+        "steam_status_bridge_missing": "Le composant de liaison Steam n'est pas prêt.",
+        "steam_status_connected": "Steam : connecté",
+        "steam_status_not_running": "Steam : déconnecté",
+        "steam_ugc_failed": "L'interface Steam UGC est indisponible.",
+        "sync_workshop": "Synchroniser le Workshop",
+        "workshop_history_clear": "Effacer l'historique",
+        "workshop_history_close": "Fermer",
+        "workshop_history_empty": "Aucun historique de désabonnement.",
+        "workshop_history_restore_tip": "L'historique conserve l'ID Workshop, le titre, le chemin et l'heure. Sélectionnez des éléments pour ouvrir des pages, vous réabonner ou supprimer des enregistrements.",
+        "workshop_history_saved": "Enregistré dans l'historique de désabonnement : {n} élément(s).",
+        "workshop_manage_hint": "Les actions d'abonnement passent d'abord par la liaison Steam de Danyria. Les désabonnements sont enregistrés et peuvent être restaurés plus tard.",
+        "workshop_open_subscriptions": "Ouvrir les abonnements",
+        "workshop_subscribe_done": "Demande d'abonnement envoyée à Steam : {n} élément(s).",
+        "workshop_sync_done": "Workshop synchronisé : {n} élément(s) du Workshop sont maintenant listés.",
+        "workshop_unsubscribe_done": "Demande de désabonnement envoyée à Steam : {n} élément(s)."
+    },
+    "es": {
+        "detail_workshop_manage": "Consejo de gestión",
+        "kind_Workshop": "Elemento del Workshop",
+        "mod_group_local": "Archivos locales",
+        "mod_group_selected": "Elemento seleccionado",
+        "mod_group_steam": "Enlace de Steam",
+        "mod_group_workshop": "Workshop",
+        "status_Missing": "Suscrito / falta archivo local",
+        "status_Subscribed": "Suscrito",
+        "steam_bridge_failed": "El enlace de Steam no se completó.",
+        "steam_connect": "Conectar Steam",
+        "steam_direct_failed": "El enlace de Steam no se completó: {reason}",
+        "steam_direct_unsubscribe": "Cancelar suscripción en Steam",
+        "steam_init_failed": "Error al inicializar Steam. Asegúrate de que Steam esté en ejecución y con sesión iniciada.",
+        "steam_missing_api": "No se encontró el componente de la API de Steam. Configura la ruta de Left 4 Dead 2 o inicia Steam y vuelve a ejecutar la comprobación del entorno.",
+        "steam_status_bridge_missing": "El componente de enlace de Steam no está listo.",
+        "steam_status_connected": "Steam: conectado",
+        "steam_status_not_running": "Steam: desconectado",
+        "steam_ugc_failed": "La interfaz Steam UGC no está disponible.",
+        "sync_workshop": "Sincronizar Workshop",
+        "workshop_history_clear": "Borrar historial",
+        "workshop_history_close": "Cerrar",
+        "workshop_history_empty": "Aún no hay historial de cancelaciones.",
+        "workshop_history_restore_tip": "El historial guarda el ID del Workshop, el título, la ruta y la hora. Selecciona elementos para abrir páginas, volver a suscribirte o eliminar registros.",
+        "workshop_history_saved": "Guardado en el historial de cancelaciones: {n} elemento(s).",
+        "workshop_manage_hint": "Las acciones de suscripción se ejecutan primero a través del enlace de Steam de Danyria. Las cancelaciones se registran y se pueden restaurar más tarde.",
+        "workshop_open_subscriptions": "Abrir suscripciones",
+        "workshop_subscribe_done": "Solicitud de suscripción enviada a Steam: {n} elemento(s).",
+        "workshop_sync_done": "Workshop sincronizado: ahora se listan {n} elemento(s) del Workshop.",
+        "workshop_unsubscribe_done": "Solicitud de cancelación enviada a Steam: {n} elemento(s)."
+    },
+    "zh_CN": {
+        "detail_workshop_manage": "管理提示",
+        "kind_Workshop": "Workshop 项目",
+        "mod_group_local": "本地文件",
+        "mod_group_selected": "选中项操作",
+        "mod_group_steam": "Steam 联动",
+        "mod_group_workshop": "创意工坊",
+        "status_Missing": "已订阅 / 本地缺失",
+        "status_Subscribed": "已订阅",
+        "steam_bridge_failed": "Steam 联动未完成。",
+        "steam_connect": "连接 Steam",
+        "steam_direct_failed": "Steam 联动没有完成：{reason}",
+        "steam_direct_unsubscribe": "Steam 取消订阅",
+        "steam_init_failed": "Steam 初始化失败。请确认 Steam 已启动并登录。",
+        "steam_missing_api": "未找到 Steam API 组件。请先设置求生之路2路径或启动 Steam 后再检查环境。",
+        "steam_status_bridge_missing": "Steam 联动组件未就绪",
+        "steam_status_connected": "Steam：已连接",
+        "steam_status_not_running": "Steam：未连接",
+        "steam_ugc_failed": "Steam UGC 接口不可用。",
+        "sync_workshop": "同步创意工坊",
+        "workshop_history_clear": "清空历史",
+        "workshop_history_close": "关闭",
+        "workshop_history_empty": "没有取消订阅历史。",
+        "workshop_history_restore_tip": "历史记录会保存取消订阅时的 Workshop ID、名称、路径和时间；选中项记录后可以打开页面、恢复订阅或删除记录。",
+        "workshop_history_saved": "已记录到取消订阅历史：{n} 项。",
+        "workshop_manage_hint": "订阅操作会优先在 Danyria 内通过 Steam 联动执行；取消订阅会写入历史，之后可在管理历史记录里恢复。",
+        "workshop_open_subscriptions": "打开订阅列表",
+        "workshop_subscribe_done": "已向 Steam 提交订阅：{n} 项。",
+        "workshop_sync_done": "已同步创意工坊：列表中包含 {n} 个来自 Workshop 的项目。",
+        "workshop_unsubscribe_done": "已向 Steam 提交取消订阅：{n} 项。",
+        "hud_defib": "电击",
+        "hud_protect": "保护",
+        "score_reference_title": "计分参考（100 分制）"
+    }
+}
+I18N = _merge_i18n_pack(I18N, I18N_LANG_FILL)
+
+I18N_HUD_STYLE = {
+    "zh": {"hud_style_label": "HUD 皮肤", "hud_style_classic": "经典", "hud_style_acg": "达妮娅 ACG"},
+    "zh_CN": {"hud_style_label": "HUD 皮肤", "hud_style_classic": "经典", "hud_style_acg": "达妮娅 ACG"},
+    "en": {"hud_style_label": "HUD Skin", "hud_style_classic": "Classic", "hud_style_acg": "Danyria ACG"},
+    "ja": {"hud_style_label": "HUD スキン", "hud_style_classic": "クラシック", "hud_style_acg": "ダーニャ ACG"},
+    "ko": {"hud_style_label": "HUD 스킨", "hud_style_classic": "클래식", "hud_style_acg": "다냐 ACG"},
+    "ru": {"hud_style_label": "Скин HUD", "hud_style_classic": "Классический", "hud_style_acg": "Danyria ACG"},
+    "de": {"hud_style_label": "HUD-Skin", "hud_style_classic": "Klassisch", "hud_style_acg": "Danyria ACG"},
+    "fr": {"hud_style_label": "Skin du HUD", "hud_style_classic": "Classique", "hud_style_acg": "Danyria ACG"},
+    "es": {"hud_style_label": "Skin del HUD", "hud_style_classic": "Clásico", "hud_style_acg": "Danyria ACG"},
+}
+I18N = _merge_i18n_pack(I18N, I18N_HUD_STYLE)
+
+
 # ---------------------------------------------------------------------------
 # 扫描结果和 VPK 索引使用的数据模型。
 # Data models used for scan results and VPK indexes.
@@ -3376,15 +4218,11 @@ class WeaponScriptRecord:
     rank: int = 0
 
 def base_dir() -> Path:
-    # 中文：运行目录用于存放用户配置和外置文件；打包后指向 exe 所在目录。
-    # English: Runtime directory stores user config and external files; in frozen builds it points to the exe folder.
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
 
 def resource_dir() -> Path:
-    # 中文：资源目录用于读取 PyInstaller/Nuitka 打包进程序的 assets/payload。
-    # English: Resource directory reads assets/payload bundled by PyInstaller/Nuitka.
     try:
         return Path(getattr(sys, "_MEIPASS", "")).resolve() if getattr(sys, "_MEIPASS", None) else Path(__file__).resolve().parent
     except Exception:
@@ -3399,8 +4237,6 @@ def first_existing_dir(*relative_parts: str) -> Path:
     return base_dir() / rel
 
 def app_data_dir() -> Path:
-    # 中文：打包版优先使用 AppData 保存运行时配置，避免写入一次性解包目录。
-    # English: Frozen builds prefer AppData for runtime config instead of the temporary extraction folder.
     if os.name == "nt":
         root = os.environ.get("APPDATA") or str(base_dir())
         return Path(root) / APP_NAME
@@ -4135,8 +4971,6 @@ def scan_one(path: Path, l4d2: Path) -> Optional[ModRecord]:
     return None
 
 def find_steam_libraries() -> list[Path]:
-    # 中文：尽量从注册表、常见目录和 libraryfolders.vdf 找到所有 Steam 库。
-    # English: Find Steam libraries from registry, common folders, and libraryfolders.vdf.
     candidates: list[Path] = []
     for base in [os.environ.get("ProgramFiles(x86)"), os.environ.get("ProgramFiles")]:
         if base:
@@ -5953,11 +6787,13 @@ QCheckBox::indicator:disabled {{
         self.plugins_page_btn = self.button(self.t("page_plugins"), lambda: self.switch_main_page("plugins"))
         self.mods_page_btn = self.button(self.t("page_mods"), lambda: self.switch_main_page("mods"))
         self.weapons_page_btn = self.button(self.t("page_weapons"), lambda: self.switch_main_page("weapons"))
-        for _nav_btn in (self.plugins_page_btn, self.mods_page_btn, self.weapons_page_btn):
+        self.servers_page_btn = self.button(self.srv_tr("page"), lambda: self.switch_main_page("servers"))
+        for _nav_btn in (self.plugins_page_btn, self.mods_page_btn, self.weapons_page_btn, self.servers_page_btn):
             _nav_btn.setProperty("navButton", True)
         self.page_nav.addWidget(self.plugins_page_btn)
         self.page_nav.addWidget(self.mods_page_btn)
         self.page_nav.addWidget(self.weapons_page_btn)
+        self.page_nav.addWidget(self.servers_page_btn)
         self.page_nav.addStretch(1)
         content_l.addLayout(self.page_nav)
 
@@ -6025,7 +6861,6 @@ QCheckBox::indicator:disabled {{
 
         plugin_l.addLayout(cards)
 
-        # 多人/第三方模式开关（开启时弹风险确认；无任何运作说明文本）。
         self.mem_enable_check_hud = QCheckBox(self.mem_tr("enable"))
         self.mem_enable_check_hud.toggled.connect(self.toggle_memory_mode)
         plugin_l.addWidget(self.mem_enable_check_hud)
@@ -6060,7 +6895,6 @@ QCheckBox::indicator:disabled {{
         sp_l.addLayout(sp_grid)
 
         self.speed_scale_label, self.speed_scale_edit = self.hud_param_row(sp_grid, 0, self.t("hud_scale"), "1.0")
-        self.speed_scale_label.hide(); self.speed_scale_edit.hide()
         self.speed_opacity_label, self.speed_opacity_edit = self.hud_param_row(sp_grid, 1, self.t("hud_opacity"), "0.95")
         self.speed_max_label, self.speed_max_edit = self.hud_param_row(sp_grid, 2, self.t("hud_max_speed"), "420")
         settings_row.addWidget(self.speed_settings_card, 1)
@@ -6083,7 +6917,6 @@ QCheckBox::indicator:disabled {{
         en_l.addLayout(en_grid)
 
         self.enemy_scale_label, self.enemy_scale_edit = self.hud_param_row(en_grid, 0, self.t("hud_scale"), "1.0")
-        self.enemy_scale_label.hide(); self.enemy_scale_edit.hide()
         self.enemy_opacity_label, self.enemy_opacity_edit = self.hud_param_row(en_grid, 1, self.t("hud_opacity"), "0.95")
         self.enemy_max_label, self.enemy_max_edit = self.hud_param_row(en_grid, 2, self.t("hud_max_enemies"), "6")
         self.enemy_distance_label, self.enemy_distance_edit = self.hud_param_row(en_grid, 3, self.t("hud_enemy_distance"), "1800")
@@ -6105,7 +6938,6 @@ QCheckBox::indicator:disabled {{
         pe_grid.setColumnMinimumWidth(1, 88)
         pe_l.addLayout(pe_grid)
         self.penalty_scale_label, self.penalty_scale_edit = self.hud_param_row(pe_grid, 0, self.t("hud_scale"), "1.0")
-        self.penalty_scale_label.hide(); self.penalty_scale_edit.hide()
         self.penalty_opacity_label, self.penalty_opacity_edit = self.hud_param_row(pe_grid, 1, self.t("hud_opacity"), "0.95")
 
         plugin_l.addLayout(settings_row)
@@ -6263,9 +7095,16 @@ QCheckBox::indicator:disabled {{
         self.weapons_page_l.setSpacing(0)
         self.build_weapons_page()
 
+        self.servers_page = QWidget()
+        self.servers_page_l = QVBoxLayout(self.servers_page)
+        self.servers_page_l.setContentsMargins(0, 0, 0, 0)
+        self.servers_page_l.setSpacing(8)
+        self.build_servers_page()
+
         self.main_stack.addWidget(self.plugins_page)
         self.main_stack.addWidget(self.mods_page)
         self.main_stack.addWidget(self.weapons_page)
+        self.main_stack.addWidget(self.servers_page)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
@@ -6478,6 +7317,7 @@ QCheckBox::indicator:disabled {{
             self.mods_page_btn.setText(self.t("page_mods"))
             if hasattr(self, "weapons_page_btn"):
                 self.weapons_page_btn.setText(self.t("page_weapons"))
+            self._retranslate_servers()
             self.plugin_title.setText(self.t("plugin_hud_title"))
             self.plugin_subtitle.setText(self.t("plugin_hud_subtitle"))
             if hasattr(self, "plugin_card") and hasattr(self.plugin_card, "set_title"):
@@ -6911,8 +7751,6 @@ QCheckBox::indicator:disabled {{
         return "\n".join(lines)
 
     def ensure_steam_bridge_scaffold(self) -> str:
-        # 中文：Steam API 运行文件必须放在稳定、可写的目录中；打包版不能写入一次性解包目录。
-        # English: Steam API runtime files must live in a stable writable folder; frozen builds must not write into the temporary extraction dir.
         folder = self.user_data / "steam_bridge"
         try:
             folder.mkdir(parents=True, exist_ok=True)
@@ -6929,8 +7767,6 @@ QCheckBox::indicator:disabled {{
         except Exception:
             pass
         try:
-            # 中文：SteamAPI_Init 依赖 AppID；把文件放在 DLL 工作目录，加载 DLL 前会 chdir 到这里。
-            # English: SteamAPI_Init needs an AppID; place it beside the DLL because the loader chdirs here before calling Steam.
             (folder / "steam_appid.txt").write_text(L4D2_APP_ID, encoding="utf-8")
         except Exception:
             pass
@@ -7207,6 +8043,21 @@ QFrame#ThemedDialogFrame QTextEdit {{
         lang_row.addWidget(lang_combo, 1)
         root.addLayout(lang_row)
 
+        hud_skin_row = QHBoxLayout()
+        hud_skin_label = QLabel(self.t("hud_style_label"))
+        hud_skin_combo = QComboBox()
+        hud_skin_combo.addItem("1", "classic")
+        hud_skin_combo.addItem("2", "acg")
+        hud_skin_combo.addItem("3", "mint")
+        try:
+            _cur_skin = str(self.read_hud_config().get("hud_style", "classic"))
+        except Exception:
+            _cur_skin = "classic"
+        hud_skin_combo.setCurrentIndex({"classic": 0, "acg": 1, "mint": 2}.get(_cur_skin, 0))
+        hud_skin_row.addWidget(hud_skin_label)
+        hud_skin_row.addWidget(hud_skin_combo, 1)
+        root.addLayout(hud_skin_row)
+
         startup_cb = QCheckBox(self.t("startup"))
         startup_cb.setChecked(self.is_autostart_enabled())
         if os.name != "nt":
@@ -7270,6 +8121,12 @@ QFrame#ThemedDialogFrame QTextEdit {{
             if os.name == "nt":
                 self.set_autostart(startup_cb.isChecked())
             self.save_config()
+            try:
+                hcfg = self.read_hud_config()
+                hcfg["hud_style"] = hud_skin_combo.currentData() or "classic"
+                self.write_hud_config(hcfg)
+            except Exception:
+                pass
             self.apply_theme(new_theme)
             self.update_language()
             dlg.accept()
@@ -7406,10 +8263,10 @@ QFrame#ThemedDialogFrame QTextEdit {{
     def default_hud_config(self) -> dict:
         return {
             "language": self.current_language(),
-            "speed": {"enabled": False, "x": 80, "y": 90, "w": 320, "h": 230, "opacity": 0.92, "max_speed": 420},
-            "enemy": {"enabled": False, "x": 80, "y": 320, "w": 460, "h": 424, "opacity": 0.92, "max_enemies": 6, "max_distance": 1800},
-            "penalty": {"enabled": False, "x": 500, "y": 90, "w": 390, "h": 330, "opacity": 0.92},
-            # 多人/三方服内存读取桥（只读外部内存）。warned 记录用户是否已确认风险弹窗。
+            "hud_style": "classic",
+            "speed": {"enabled": False, "x": 80, "y": 90, "scale": 1.0, "opacity": 0.92, "max_speed": 420},
+            "enemy": {"enabled": False, "x": 80, "y": 320, "scale": 1.0, "opacity": 0.92, "max_enemies": 6, "max_distance": 1800},
+            "penalty": {"enabled": False, "x": 500, "y": 90, "scale": 1.0, "opacity": 0.92},
             "memory": {"enabled": False, "warned": False},
         }
 
@@ -7421,6 +8278,8 @@ QFrame#ThemedDialogFrame QTextEdit {{
                 loaded = json.loads(p.read_text(encoding="utf-8"))
                 if isinstance(loaded.get("language"), str):
                     cfg["language"] = loaded.get("language")
+                if isinstance(loaded.get("hud_style"), str):
+                    cfg["hud_style"] = loaded.get("hud_style")
                 for section in ("speed", "enemy", "penalty", "memory"):
                     if isinstance(loaded.get(section), dict):
                         cfg.setdefault(section, {}).update(loaded[section])
@@ -7492,8 +8351,7 @@ QFrame#ThemedDialogFrame QTextEdit {{
         except Exception:
             pass
 
-    # 内存桥文案：一处集中、每条一次写齐 8 种语言（比逐条对照的旧 i18n 更省事）。
-    # 以后新增 UI 文本，推荐照这个 key -> {lang: text} 的写法，不用再去 8 套字典里挨个加。
+
     MEM_TEXT = {
         "enable": {
             "zh": "多人/第三方模式",
@@ -7545,8 +8403,6 @@ QFrame#ThemedDialogFrame QTextEdit {{
             cfg = self.read_hud_config()
             mem = cfg.setdefault("memory", {})
             if checked:
-                # 用本项目自带的 DanyriaMessageBox.question（带 是/否 按钮并返回 StandardButton）；
-                # 不能用 .warning（它只有 OK 按钮、永远不返回 Yes，会导致确认后又被取消勾选）。
                 resp = QMessageBox.question(self, self.mem_tr("warn_title"), self.mem_tr("warn_body"))
                 if resp != QMessageBox.StandardButton.Yes:
                     self._sync_memory_checks(False)
@@ -7557,7 +8413,6 @@ QFrame#ThemedDialogFrame QTextEdit {{
                 mem["enabled"] = False
             self.write_hud_config(cfg)
             self._sync_memory_checks(bool(mem.get("enabled")))
-            # 切换数据源需要重启外置 HUD 进程：worker 仅在启动时读取 memory.enabled。
             self.stop_hud_process()
             if self.any_hud_enabled(cfg):
                 self.launch_hud(show_errors=False)
@@ -7610,12 +8465,12 @@ QFrame#ThemedDialogFrame QTextEdit {{
     def save_hud_settings(self):
         current = self.read_hud_config()
         cfg = {
+            "hud_style": current.get("hud_style", "classic"),
             "speed": {
                 "x": current.get("speed", {}).get("x", 80),
                 "y": current.get("speed", {}).get("y", 90),
                 "enabled": self.speed_enable_check.isChecked() if hasattr(self, "speed_enable_check") else current.get("speed", {}).get("enabled", False),
-                "w": current.get("speed", {}).get("w", 320),
-                "h": current.get("speed", {}).get("h", 230),
+                "scale": self._num(self.speed_scale_edit, 1.0, float, 0.3, 4.0),
                 "opacity": self._num(self.speed_opacity_edit, 0.92, float, 0.1, 1.0),
                 "max_speed": self._num(self.speed_max_edit, 420, int, 100, 2000),
             },
@@ -7623,8 +8478,7 @@ QFrame#ThemedDialogFrame QTextEdit {{
                 "x": current.get("enemy", {}).get("x", 80),
                 "y": current.get("enemy", {}).get("y", 320),
                 "enabled": self.enemy_enable_check.isChecked() if hasattr(self, "enemy_enable_check") else current.get("enemy", {}).get("enabled", False),
-                "w": current.get("enemy", {}).get("w", 460),
-                "h": current.get("enemy", {}).get("h", 424),
+                "scale": self._num(self.enemy_scale_edit, 1.0, float, 0.3, 4.0),
                 "opacity": self._num(self.enemy_opacity_edit, 0.92, float, 0.1, 1.0),
                 "max_enemies": self._num(self.enemy_max_edit, 6, int, 1, 12),
                 "max_distance": self._num(self.enemy_distance_edit, 1800, int, 200, 10000) if hasattr(self, "enemy_distance_edit") else current.get("enemy", {}).get("max_distance", 1800),
@@ -7633,11 +8487,9 @@ QFrame#ThemedDialogFrame QTextEdit {{
                 "x": current.get("penalty", {}).get("x", 500),
                 "y": current.get("penalty", {}).get("y", 90),
                 "enabled": self.penalty_enable_check.isChecked() if hasattr(self, "penalty_enable_check") else current.get("penalty", {}).get("enabled", False),
-                "w": current.get("penalty", {}).get("w", 390),
-                "h": current.get("penalty", {}).get("h", 285),
+                "scale": self._num(self.penalty_scale_edit, 1.0, float, 0.3, 4.0) if hasattr(self, "penalty_scale_edit") else current.get("penalty", {}).get("scale", 1.0),
                 "opacity": self._num(self.penalty_opacity_edit, 0.92, float, 0.1, 1.0) if hasattr(self, "penalty_opacity_edit") else current.get("penalty", {}).get("opacity", 0.92),
             },
-            # 保留内存桥开关，避免保存 HUD 设置时被清掉。
             "memory": current.get("memory", {"enabled": False, "warned": False}),
         }
         self.write_hud_config(cfg)
@@ -7709,6 +8561,8 @@ QFrame#ThemedDialogFrame QTextEdit {{
             target_widget = self.mods_page
         elif page == "weapons" and hasattr(self, "weapons_page"):
             target_widget = self.weapons_page
+        elif page == "servers" and hasattr(self, "servers_page"):
+            target_widget = self.servers_page
         else:
             page = "plugins"
             target_widget = self.plugins_page
@@ -7719,13 +8573,16 @@ QFrame#ThemedDialogFrame QTextEdit {{
             self.animate_page_transition(target_widget)
         if page == "weapons" and hasattr(self, "weapons_page") and not self.weapon_records:
             self.scan_weapon_scripts(silent=True)
-
+        if page == "servers" and hasattr(self, "servers_page"):
+            self._srv_ensure_browser()    
         pairs = [
             (self.plugins_page_btn, page == "plugins"),
             (self.mods_page_btn, page == "mods"),
         ]
         if hasattr(self, "weapons_page_btn"):
             pairs.append((self.weapons_page_btn, page == "weapons"))
+        if hasattr(self, "servers_page_btn"):
+            pairs.append((self.servers_page_btn, page == "servers"))
         for b, active in pairs:
             b.setProperty("navActive", active)
             b.style().unpolish(b)
@@ -7759,6 +8616,402 @@ QFrame#ThemedDialogFrame QTextEdit {{
                 for col, width in enumerate(widths):
                     if col < table.columnCount():
                         table.setColumnWidth(col, max(48, int(width)))
+        except Exception:
+            pass
+
+    # ===================== 服务器面板 / Server panel =====================
+    # 文案集中、每条一次写齐 8 语言（同 MEM_TEXT 的便捷写法）。
+    SRV_TEXT = {
+        "page":   {"zh": "服务器", "en": "Servers", "ja": "サーバー", "ko": "서버", "ru": "Серверы", "de": "Server", "fr": "Serveurs", "es": "Servidores"},
+        "title":  {"zh": "游戏服务器浏览器", "en": "Game Server Browser", "ja": "ゲームサーバーブラウザ", "ko": "게임 서버 브라우저", "ru": "Браузер игровых серверов", "de": "Server-Browser", "fr": "Navigateur de serveurs", "es": "Explorador de servidores"},
+        "subtitle": {
+            "zh": "实时查看 L4D2 服务器（互联网/局域网/好友），分类筛选、查看详情、一键进入。连接时若游戏未启动或创意工坊模组未加载完，会自动等待。",
+            "en": "Live L4D2 servers (internet / LAN / friends): filter, view details, one-click join. Joining auto-waits if the game/workshop addons are still loading.",
+            "ja": "L4D2 サーバーをリアルタイム表示（インターネット/LAN/フレンド）。絞り込み・詳細・ワンクリック参加。ゲームやワークショップ読み込み中は自動で待機します。",
+            "ko": "L4D2 서버 실시간 조회(인터넷/LAN/친구): 필터, 상세, 원클릭 입장. 게임/워크샵 로딩 중이면 자동 대기합니다.",
+            "ru": "Серверы L4D2 в реальном времени (интернет/LAN/друзья): фильтр, детали, вход в один клик. Подключение ждёт загрузки игры/модов.",
+            "de": "L4D2-Server live (Internet/LAN/Freunde): filtern, Details, Ein-Klick-Beitritt. Beitritt wartet automatisch, falls Spiel/Workshop noch lädt.",
+            "fr": "Serveurs L4D2 en direct (internet/LAN/amis) : filtrer, détails, rejoindre en un clic. La connexion attend le chargement du jeu/workshop.",
+            "es": "Servidores L4D2 en vivo (internet/LAN/amigos): filtrar, detalles, unirse con un clic. La conexión espera si el juego/workshop aún cargan.",
+        },
+        "src_internet": {"zh": "互联网", "en": "Internet", "ja": "インターネット", "ko": "인터넷", "ru": "Интернет", "de": "Internet", "fr": "Internet", "es": "Internet"},
+        "src_lan": {"zh": "局域网", "en": "LAN", "ja": "LAN", "ko": "LAN", "ru": "LAN", "de": "LAN", "fr": "LAN", "es": "LAN"},
+        "src_friends": {"zh": "好友", "en": "Friends", "ja": "フレンド", "ko": "친구", "ru": "Друзья", "de": "Freunde", "fr": "Amis", "es": "Amigos"},
+        "search_ph": {"zh": "搜索名称 / 地图 / 地址…", "en": "Search name / map / address…", "ja": "名前/マップ/アドレスを検索…", "ko": "이름/맵/주소 검색…", "ru": "Поиск: имя/карта/адрес…", "de": "Name/Map/Adresse suchen…", "fr": "Rechercher nom/carte/adresse…", "es": "Buscar nombre/mapa/dirección…"},
+        "c_name": {"zh": "名称", "en": "Name", "ja": "名前", "ko": "이름", "ru": "Имя", "de": "Name", "fr": "Nom", "es": "Nombre"},
+        "c_map": {"zh": "地图", "en": "Map", "ja": "マップ", "ko": "맵", "ru": "Карта", "de": "Map", "fr": "Carte", "es": "Mapa"},
+        "c_players": {"zh": "玩家", "en": "Players", "ja": "プレイヤー", "ko": "플레이어", "ru": "Игроки", "de": "Spieler", "fr": "Joueurs", "es": "Jugadores"},
+        "c_ping": {"zh": "延迟", "en": "Ping", "ja": "Ping", "ko": "핑", "ru": "Пинг", "de": "Ping", "fr": "Ping", "es": "Ping"},
+        "c_source": {"zh": "来源", "en": "Source", "ja": "ソース", "ko": "출처", "ru": "Источник", "de": "Quelle", "fr": "Source", "es": "Origen"},
+        "refresh": {"zh": "刷新", "en": "Refresh", "ja": "更新", "ko": "새로고침", "ru": "Обновить", "de": "Aktualisieren", "fr": "Actualiser", "es": "Actualizar"},
+        "join": {"zh": "一键进入", "en": "Join", "ja": "参加", "ko": "입장", "ru": "Войти", "de": "Beitreten", "fr": "Rejoindre", "es": "Unirse"},
+        "no_sel": {"zh": "在左侧选择一个服务器查看详情。", "en": "Select a server on the left to see details.", "ja": "左でサーバーを選ぶと詳細が表示されます。", "ko": "왼쪽에서 서버를 선택하면 상세가 표시됩니다.", "ru": "Выберите сервер слева, чтобы увидеть детали.", "de": "Links einen Server wählen für Details.", "fr": "Sélectionnez un serveur à gauche pour les détails.", "es": "Selecciona un servidor a la izquierda para ver detalles."},
+        "joining": {"zh": "正在通过 Steam 连接…若游戏/模组未就绪会自动等待。", "en": "Connecting via Steam… auto-waits if game/addons aren't ready.", "ja": "Steam 経由で接続中…ゲーム/MOD 未準備なら自動待機。", "ko": "Steam으로 연결 중… 게임/애드온 미준비 시 자동 대기.", "ru": "Подключение через Steam… ждёт готовности игры/модов.", "de": "Verbinde über Steam… wartet, falls Spiel/Mods nicht bereit.", "fr": "Connexion via Steam… attend si le jeu/mods ne sont pas prêts.", "es": "Conectando vía Steam… espera si el juego/mods no están listos."},
+        "friends_note": {"zh": "好友列表需要 Steam 正在运行（实验性）。", "en": "Friends list needs Steam running (experimental).", "ja": "フレンド一覧は Steam 起動が必要（実験的）。", "ko": "친구 목록은 Steam 실행 필요(실험적).", "ru": "Список друзей требует запущенного Steam (экспериментально).", "de": "Freundesliste benötigt laufendes Steam (experimentell).", "fr": "La liste d'amis nécessite Steam (expérimental).", "es": "La lista de amigos requiere Steam (experimental)."},
+        "wsnote": {
+            "zh": "提示：一键进入时若创意工坊模组尚未加载完，可能不带模组进服（游戏侧时机，软件无法强制等待）。建议把常用模组直接放到 left4dead2/addons/ 作为前置加载，或先启动游戏进到主菜单（等模组加载完）再点进入。",
+            "en": "Tip: if Workshop addons haven't finished loading when you join, you may enter without them (this is game-side timing the app can't force). Put frequently-used mods directly in left4dead2/addons/ as a preload, or launch the game to the main menu (let mods finish) before joining.",
+            "ja": "ヒント：参加時にワークショップ MOD の読み込みが終わっていないと、MOD なしで入ることがあります（ゲーム側のタイミングで、ソフト側からは強制待機できません）。よく使う MOD は left4dead2/addons/ に直接置いて先読みさせるか、先にゲームを起動してメインメニュー（MOD 読み込み完了）まで進んでから参加してください。",
+            "ko": "팁: 입장 시 창작마당 모드 로딩이 끝나지 않으면 모드 없이 입장될 수 있습니다(게임 측 타이밍이라 앱이 강제로 기다릴 수 없음). 자주 쓰는 모드는 left4dead2/addons/ 에 직접 넣어 선로딩하거나, 게임을 먼저 실행해 메인 메뉴(모드 로딩 완료)까지 간 뒤 입장하세요.",
+            "ru": "Совет: если при входе моды мастерской ещё не загрузились, вы можете войти без них (это тайминг на стороне игры, приложение не может ждать принудительно). Поместите частые моды прямо в left4dead2/addons/ для предзагрузки или сначала запустите игру до главного меню (дайте модам загрузиться), затем входите.",
+            "de": "Tipp: Wenn beim Beitritt die Workshop-Mods noch nicht geladen sind, treten Sie evtl. ohne sie bei (spielseitiges Timing, die App kann nicht erzwingen zu warten). Legen Sie häufige Mods direkt in left4dead2/addons/ zum Vorab-Laden oder starten Sie das Spiel bis zum Hauptmenü (Mods laden lassen), bevor Sie beitreten.",
+            "fr": "Astuce : si les mods du Workshop ne sont pas chargés en rejoignant, vous pourriez entrer sans eux (timing côté jeu, l'app ne peut pas forcer l'attente). Placez les mods fréquents directement dans left4dead2/addons/ en préchargement, ou lancez le jeu jusqu'au menu principal (laissez charger) avant de rejoindre.",
+            "es": "Consejo: si al unirte los mods del Workshop no han cargado, podrías entrar sin ellos (es el tiempo del juego; la app no puede forzar la espera). Pon los mods frecuentes directamente en left4dead2/addons/ como precarga, o inicia el juego hasta el menú principal (deja cargar) antes de unirte.",
+        },
+        "bl_enable": {"zh": "启用黑名单", "en": "Blacklist", "ja": "ブラックリスト", "ko": "블랙리스트", "ru": "Чёрный список", "de": "Blacklist", "fr": "Liste noire", "es": "Lista negra"},
+        "bl_edit": {"zh": "编辑黑名单", "en": "Edit blacklist", "ja": "ブラックリスト編集", "ko": "블랙리스트 편집", "ru": "Изменить список", "de": "Blacklist bearbeiten", "fr": "Modifier la liste", "es": "Editar lista negra"},
+        "bl_block_sel": {"zh": "屏蔽选中IP", "en": "Block selected IP", "ja": "選択 IP を遮断", "ko": "선택 IP 차단", "ru": "Заблокировать IP", "de": "Gewählte IP sperren", "fr": "Bloquer l'IP", "es": "Bloquear IP"},
+        "bl_title": {"zh": "服务器黑名单", "en": "Server Blacklist", "ja": "サーバーブラックリスト", "ko": "서버 블랙리스트", "ru": "Чёрный список серверов", "de": "Server-Blacklist", "fr": "Liste noire de serveurs", "es": "Lista negra de servidores"},
+        "bl_kw_label": {"zh": "名称关键字(空格分隔，如 rpg cn)：", "en": "Name keywords (space-separated, e.g. rpg cn):", "ja": "名前キーワード(空白区切り、例 rpg cn)：", "ko": "이름 키워드(공백 구분, 예 rpg cn):", "ru": "Ключевые слова имени (через пробел, напр. rpg cn):", "de": "Namens-Stichwörter (Leerzeichen, z. B. rpg cn):", "fr": "Mots-clés du nom (séparés par espace, ex. rpg cn) :", "es": "Palabras clave del nombre (separadas por espacio, ej. rpg cn):"},
+        "bl_ip_label": {"zh": "IP / IP前缀(空格分隔，如 1.2.3. 或 1.2.3.4)：", "en": "IPs / prefixes (space-separated, e.g. 1.2.3. or 1.2.3.4):", "ja": "IP / 接頭辞(空白区切り、例 1.2.3. や 1.2.3.4)：", "ko": "IP / 접두사(공백 구분, 예 1.2.3. 또는 1.2.3.4):", "ru": "IP / префиксы (через пробел, напр. 1.2.3. или 1.2.3.4):", "de": "IPs / Präfixe (Leerzeichen, z. B. 1.2.3. oder 1.2.3.4):", "fr": "IP / préfixes (séparés par espace, ex. 1.2.3. ou 1.2.3.4) :", "es": "IP / prefijos (separados por espacio, ej. 1.2.3. o 1.2.3.4):"},
+        "bl_hint": {"zh": "名称会被服主改来规避过滤，改不了的 IP 更可靠；IP 支持前缀匹配整段。", "en": "Names can be changed to dodge filters; IP is more reliable (prefix matches a whole range).", "ja": "名前は変更で回避されがち。IP の方が確実(接頭辞で範囲一致)。", "ko": "이름은 필터 회피로 바뀔 수 있어 IP가 더 확실(접두사로 대역 일치).", "ru": "Имена меняют, чтобы обойти фильтр; IP надёжнее (префикс — весь диапазон).", "de": "Namen werden geändert, um Filter zu umgehen; IP ist zuverlässiger (Präfix = ganzer Bereich).", "fr": "Les noms changent pour éviter les filtres ; l'IP est plus fiable (préfixe = plage entière).", "es": "Los nombres cambian para evadir filtros; la IP es más fiable (el prefijo cubre un rango)."},
+        "bl_save": {"zh": "保存", "en": "Save", "ja": "保存", "ko": "저장", "ru": "Сохранить", "de": "Speichern", "fr": "Enregistrer", "es": "Guardar"},
+        "bl_cancel": {"zh": "取消", "en": "Cancel", "ja": "キャンセル", "ko": "취소", "ru": "Отмена", "de": "Abbrechen", "fr": "Annuler", "es": "Cancelar"},
+    }
+
+    def srv_tr(self, key: str) -> str:
+        entry = self.SRV_TEXT.get(key, {})
+        return entry.get(self.current_language()) or entry.get("en") or key
+
+    def _srv_blacklist_path(self):
+        try:
+            return self.hud_config_path().with_name("danyria_server_blacklist.json")
+        except Exception:
+            return Path("danyria_server_blacklist.json")
+
+    def _srv_load_blacklist(self):
+        d = {"enabled": False, "name_keywords": [], "ips": []}
+        try:
+            p = self._srv_blacklist_path()
+            if p.exists():
+                loaded = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    d["enabled"] = bool(loaded.get("enabled", False))
+                    d["name_keywords"] = [str(x).lower() for x in loaded.get("name_keywords", []) if str(x).strip()]
+                    d["ips"] = [str(x).strip() for x in loaded.get("ips", []) if str(x).strip()]
+        except Exception:
+            pass
+        return d
+
+    def _srv_save_blacklist(self, bl):
+        try:
+            p = self._srv_blacklist_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(bl, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _srv_row_ip(self, r):
+        ip = str(r.get("ip", "") or "")
+        if not ip and r.get("addr"):
+            ip = str(r.get("addr")).split(":")[0]
+        return ip
+
+    def _srv_blacklisted(self, r, bl):
+        name = str(r.get("name", "")).lower()
+        for kw in bl.get("name_keywords", []):
+            if kw and kw in name:
+                return True
+        ip = self._srv_row_ip(r)
+        for e in bl.get("ips", []):
+            if e and (ip == e or ip.startswith(e)):
+                return True
+        return False
+
+    def _srv_toggle_blacklist(self, checked):
+        bl = getattr(self, "_srv_bl", None) or self._srv_load_blacklist()
+        bl["enabled"] = bool(checked)
+        self._srv_bl = bl
+        self._srv_save_blacklist(bl)
+        self._srv_refresh_table()
+
+    def _srv_block_selected(self):
+        d = self._srv_selected_data()
+        if not d:
+            return
+        ip = self._srv_row_ip(d)
+        if not ip:
+            return
+        bl = getattr(self, "_srv_bl", None) or self._srv_load_blacklist()
+        if ip not in bl.setdefault("ips", []):
+            bl["ips"].append(ip)
+        bl["enabled"] = True
+        self._srv_bl = bl
+        self._srv_save_blacklist(bl)
+        if hasattr(self, "srv_bl_check"):
+            self.srv_bl_check.blockSignals(True)
+            self.srv_bl_check.setChecked(True)
+            self.srv_bl_check.blockSignals(False)
+        self._srv_refresh_table()
+
+    def _srv_edit_blacklist(self):
+        bl = getattr(self, "_srv_bl", None) or self._srv_load_blacklist()
+        dlg, root = self.create_themed_dialog(self.srv_tr("bl_title"), min_width=540)
+        root.addWidget(QLabel(self.srv_tr("bl_kw_label")))
+        kw_edit = QLineEdit(" ".join(bl.get("name_keywords", [])))
+        root.addWidget(kw_edit)
+        root.addWidget(QLabel(self.srv_tr("bl_ip_label")))
+        ip_edit = QLineEdit(" ".join(bl.get("ips", [])))
+        root.addWidget(ip_edit)
+        hint = QLabel(self.srv_tr("bl_hint"))
+        hint.setObjectName("TinyText")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        cancel_btn = QPushButton(self.srv_tr("bl_cancel"))
+        cancel_btn.setMinimumWidth(96)
+        save_btn = QPushButton(self.srv_tr("bl_save"))
+        save_btn.setMinimumWidth(96)
+        save_btn.setProperty("accent", True)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(save_btn)
+        root.addLayout(btn_row)
+
+        def _do_save():
+            bl["name_keywords"] = [x.strip().lower() for x in kw_edit.text().replace(",", " ").split() if x.strip()]
+            bl["ips"] = [x.strip() for x in ip_edit.text().replace(",", " ").split() if x.strip()]
+            self._srv_bl = bl
+            self._srv_save_blacklist(bl)
+            self._srv_refresh_table()
+            dlg.accept()
+
+        cancel_btn.clicked.connect(dlg.reject)
+        save_btn.clicked.connect(_do_save)
+        try:
+            dlg.exec()
+        except AttributeError:
+            dlg.exec_()
+
+    def _srv_ensure_browser(self):
+        if getattr(self, "_srv_browser", None) is None:
+            try:
+                dirs = [str(d) for d in self.steam_bridge_source_dirs()]
+            except Exception:
+                dirs = []
+            self._srv_browser = ServerBrowser(steam_dll_dirs=dirs)
+            try:
+                self._srv_browser.set_mode(self.srv_source.currentData() or "friends")
+            except Exception:
+                pass
+            self._srv_browser.start()
+            self._srv_timer = QTimer(self)
+            self._srv_timer.timeout.connect(self._srv_tick)
+            self._srv_timer.start(1000)
+            self._srv_force_refresh()
+        else:
+            self._srv_browser.start()
+
+    def build_servers_page(self):
+        L = self.servers_page_l
+        self.srv_title = QLabel(self.srv_tr("title"))
+        self.srv_title.setObjectName("SectionTitle")
+        self.srv_sub = QLabel(self.srv_tr("subtitle"))
+        self.srv_sub.setObjectName("Muted")
+        self.srv_sub.setWordWrap(True)
+        self.srv_wsnote = QLabel(self.srv_tr("wsnote"))
+        self.srv_wsnote.setObjectName("TinyText")
+        self.srv_wsnote.setWordWrap(True)
+        L.addWidget(self.srv_title)
+        L.addWidget(self.srv_sub)
+        L.addWidget(self.srv_wsnote)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.srv_source = QComboBox()
+        for key, mode in (("src_friends", "friends"), ("src_lan", "lan"), ("src_internet", "internet")):
+            self.srv_source.addItem(self.srv_tr(key), mode)
+        self.srv_source.currentIndexChanged.connect(self._srv_source_changed)
+        self.srv_search = QLineEdit()
+        self.srv_search.setPlaceholderText(self.srv_tr("search_ph"))
+        self.srv_search.textChanged.connect(lambda *_: self._srv_refresh_table())
+        self.srv_refresh_btn = self.button(self.srv_tr("refresh"), self._srv_force_refresh, accent=True)
+        row.addWidget(self.srv_source, 0)
+        row.addWidget(self.srv_search, 1)
+        row.addWidget(self.srv_refresh_btn, 0)
+        L.addLayout(row)
+
+        self._srv_bl = self._srv_load_blacklist()
+        bl_row = QHBoxLayout()
+        bl_row.setSpacing(8)
+        self.srv_bl_check = QCheckBox(self.srv_tr("bl_enable"))
+        self.srv_bl_check.setChecked(bool(self._srv_bl.get("enabled", False)))
+        self.srv_bl_check.toggled.connect(self._srv_toggle_blacklist)
+        self.srv_bl_edit_btn = self.button(self.srv_tr("bl_edit"), self._srv_edit_blacklist)
+        self.srv_bl_block_btn = self.button(self.srv_tr("bl_block_sel"), self._srv_block_selected)
+        bl_row.addWidget(self.srv_bl_check, 0)
+        bl_row.addWidget(self.srv_bl_edit_btn, 0)
+        bl_row.addWidget(self.srv_bl_block_btn, 0)
+        bl_row.addStretch(1)
+        L.addLayout(bl_row)
+
+        self.srv_status = QLabel("")
+        self.srv_status.setObjectName("TinyText")
+        L.addWidget(self.srv_status)
+
+        body = QHBoxLayout()
+        body.setSpacing(10)
+        self.srv_table = QTableWidget(0, 5)
+        self.srv_table.setHorizontalHeaderLabels([
+            self.srv_tr("c_name"), self.srv_tr("c_map"), self.srv_tr("c_players"),
+            self.srv_tr("c_ping"), self.srv_tr("c_source")])
+        try:
+            self.srv_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+            self.srv_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+            self.srv_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        except Exception:
+            pass
+        self.srv_table.verticalHeader().setVisible(False)
+        self.srv_table.itemSelectionChanged.connect(self._srv_selected)
+        self.srv_table.itemDoubleClicked.connect(lambda *_: self._srv_join())
+        self.make_columns_resizable(self.srv_table, [250, 150, 80, 64, 84])
+        body.addWidget(self.srv_table, 2)
+
+        detail = QFrame(objectName="PathCard")
+        detail.setMinimumWidth(220)
+        dl = QVBoxLayout(detail)
+        dl.setContentsMargins(14, 12, 14, 12)
+        dl.setSpacing(8)
+        self.srv_detail = QLabel(self.srv_tr("no_sel"))
+        self.srv_detail.setWordWrap(True)
+        self.srv_detail.setObjectName("Muted")
+        self.srv_detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        dl.addWidget(self.srv_detail, 1)
+        self.srv_join_btn = self.button(self.srv_tr("join"), self._srv_join, accent=True)
+        dl.addWidget(self.srv_join_btn)
+        body.addWidget(detail, 1)
+        L.addLayout(body, 1)
+        self._srv_rowdata = []
+
+    def _srv_source_changed(self, *_):
+        b = getattr(self, "_srv_browser", None)
+        if b is not None:
+            b.set_mode(self.srv_source.currentData() or "internet")
+            self._srv_rowdata = []
+            self.srv_table.setRowCount(0)
+            self.srv_detail.setText(self.srv_tr("no_sel"))
+
+    def _srv_force_refresh(self):
+        b = getattr(self, "_srv_browser", None)
+        if b is None:
+            self._srv_ensure_browser()
+            return
+        with b.lock:
+            b._master = []
+            b._master_t = 0.0
+            b.dirty = True
+        self._srv_refresh_table()
+
+    def _srv_tick(self):
+        b = getattr(self, "_srv_browser", None)
+        if b is None:
+            return
+        if hasattr(self, "main_stack") and self.main_stack.currentWidget() is not getattr(self, "servers_page", None):
+            return
+        with b.lock:
+            dirty = b.dirty
+        if dirty:
+            self._srv_refresh_table()
+
+    def _srv_refresh_table(self):
+        b = getattr(self, "_srv_browser", None)
+        if b is None or not hasattr(self, "srv_table"):
+            return
+        servers, friends, status = b.snapshot()
+        self.srv_status.setText(status or "")
+        src = self.srv_source.currentData() or "internet"
+        rows = list(friends) if src == "friends" else list(servers)
+        q = self.srv_search.text().strip().lower()
+        if q:
+            rows = [r for r in rows if q in ("%s %s %s" % (r.get("name", ""), r.get("map", ""), r.get("addr", ""))).lower()]
+        bl = getattr(self, "_srv_bl", None)
+        if bl and bl.get("enabled"):
+            rows = [r for r in rows if not self._srv_blacklisted(r, bl)]
+        rows.sort(key=lambda r: (-int(r.get("players", 0) or 0), int(r.get("ping", 9999) or 9999)))
+        src_label = {"internet": self.srv_tr("src_internet"), "lan": self.srv_tr("src_lan"), "friend": self.srv_tr("src_friends")}
+        self._srv_rowdata = rows
+        self.srv_table.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            self.srv_table.setItem(i, 0, QTableWidgetItem(str(r.get("name", ""))))
+            self.srv_table.setItem(i, 1, QTableWidgetItem(str(r.get("map", "") or ("(lobby)" if r.get("lobby") else ""))))
+            self.srv_table.setItem(i, 2, QTableWidgetItem("%d/%d" % (int(r.get("players", 0) or 0), int(r.get("max", 0) or 0))))
+            self.srv_table.setItem(i, 3, QTableWidgetItem("" if src == "friends" else str(int(r.get("ping", 0) or 0))))
+            self.srv_table.setItem(i, 4, QTableWidgetItem(src_label.get(r.get("source", ""), r.get("source", ""))))
+        if src == "friends" and not friends:
+            self.srv_status.setText((status or "") + " · " + self.srv_tr("friends_note"))
+
+    def _srv_selected_data(self):
+        try:
+            row = self.srv_table.currentRow()
+            if 0 <= row < len(self._srv_rowdata):
+                return self._srv_rowdata[row]
+        except Exception:
+            pass
+        return None
+
+    def _srv_selected(self):
+        d = self._srv_selected_data()
+        if not d:
+            self.srv_detail.setText(self.srv_tr("no_sel"))
+            return
+        lines = [
+            str(d.get("name", "")),
+            "",
+            "%s: %s" % (self.srv_tr("c_map"), d.get("map", "") or ("(lobby)" if d.get("lobby") else "-")),
+            "%s: %d / %d" % (self.srv_tr("c_players"), int(d.get("players", 0) or 0), int(d.get("max", 0) or 0)),
+        ]
+        if d.get("source") != "friend":
+            lines.append("%s: %d ms" % (self.srv_tr("c_ping"), int(d.get("ping", 0) or 0)))
+        lines.append("Addr: %s" % (d.get("addr") or "-"))
+        self.srv_detail.setText("\n".join(lines))
+
+    def _srv_join(self):
+        d = self._srv_selected_data()
+        if not d:
+            return
+        url = None
+        if d.get("source") == "friend":
+            conn = d.get("connect") or ""
+            m = re.search(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+)", conn)
+            if m:
+                url = "steam://connect/%s" % m.group(1)
+            elif d.get("addr"):
+                url = "steam://connect/%s" % d["addr"]
+            elif d.get("lobby"):
+                url = "steam://joinlobby/550/%d/%d" % (int(d["lobby"]), int(d.get("steamid", 0)))
+        elif d.get("addr"):
+            url = "steam://connect/%s" % d["addr"]
+        if not url:
+            return
+        try:
+            os.startfile(url)  
+        except Exception:
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+        self.srv_status.setText(self.srv_tr("joining"))
+
+    def _retranslate_servers(self):
+        if not hasattr(self, "srv_title"):
+            return
+        try:
+            self.servers_page_btn.setText(self.srv_tr("page"))
+            self.srv_title.setText(self.srv_tr("title"))
+            self.srv_sub.setText(self.srv_tr("subtitle"))
+            self.srv_wsnote.setText(self.srv_tr("wsnote"))
+            self.srv_search.setPlaceholderText(self.srv_tr("search_ph"))
+            self.srv_refresh_btn.setText(self.srv_tr("refresh"))
+            self.srv_join_btn.setText(self.srv_tr("join"))
+            if hasattr(self, "srv_bl_check"):
+                self.srv_bl_check.setText(self.srv_tr("bl_enable"))
+                self.srv_bl_edit_btn.setText(self.srv_tr("bl_edit"))
+                self.srv_bl_block_btn.setText(self.srv_tr("bl_block_sel"))
+            for i, key in enumerate(("src_friends", "src_lan", "src_internet")):
+                self.srv_source.setItemText(i, self.srv_tr(key))
+            self.srv_table.setHorizontalHeaderLabels([
+                self.srv_tr("c_name"), self.srv_tr("c_map"), self.srv_tr("c_players"),
+                self.srv_tr("c_ping"), self.srv_tr("c_source")])
         except Exception:
             pass
 
@@ -9432,7 +10685,7 @@ QFrame#ThemedDialogFrame QTextEdit {{
         return self.user_data / "steam_bridge"
 
     def steam_bridge_source_dirs(self) -> list[Path]:
-         dirs = [
+        dirs = [
             self.steam_bridge_dir(),
             self.base / "steam_bridge",
             self.resource_base / "steam_bridge",
@@ -9526,8 +10779,6 @@ QFrame#ThemedDialogFrame QTextEdit {{
                 if selected.resolve() != target.resolve():
                     shutil.copy2(selected, target)
                     selected = target
-                # 中文：确保 AppID 文件和 DLL 在同一工作目录，避免 SteamAPI_Init 一直失败。
-                # English: Keep the AppID file beside the DLL so SteamAPI_Init can resolve the app while running outside Steam.
                 (folder / "steam_appid.txt").write_text(L4D2_APP_ID, encoding="utf-8")
             except Exception as exc:
                 result["message"] = f"Steam API copy failed: {exc}"
@@ -10446,6 +11697,11 @@ QFrame#ThemedDialogFrame QTextEdit {{
 
     def closeEvent(self, event):
         self.stop_hud_process()
+        try:
+            if getattr(self, "_srv_browser", None) is not None:
+                self._srv_browser.stop()
+        except Exception:
+            pass
         try:
             QApplication.instance().removeEventFilter(self)
         except Exception:
