@@ -300,3 +300,19 @@ VScript runs server-side only, so a joining client on a 3rd-party/dedicated serv
 - **Drag**: whole-window drag removed in favour of a top-right `DragGrip` handle (18×18 dot child widget).
 - **Scale**: mouse drag-resize removed; each plugin panel has a `scale` value (0.3–4.0); `sync_window` builds the window at `scale × logical size`.
 - Fixed the enemy window being created at `76+n*58` while painting at `60+n*58`, which stretched it vertically; the two now match.
+
+---
+
+## 9. 生涯战绩 + 崩溃守护 / Career stats + crash guard
+
+### 中文
+
+- **崩溃自动重连**（主程序，纯 stdlib）：服务器面板一键进服时记录 `ip:port`（存 `danyria_app_config.json` 的 `last_server`）。勾选「崩溃自动重连」后，每 5s 用 `tasklist` 探测 `left4dead2.exe`。判定链：开启 + 本会话进过服 + 游戏运行 ≥15s（排除开机秒退循环）→ 检测到退出后 **~10s 宽限**（期间取消勾选即停）→ `steam://connect/<ip:port>` 重连上个服；**60s 冷却 + 单次最多 3 连**防死循环。关闭时完全不探测（零开销）。代码：`_crash_tick` / `_is_game_running` / `_toggle_crash_guard` / `_init_danyria_extras`。
+- **生涯战绩**（主程序 SQLite + QPainter 自绘图表）：新增第五板块「生涯」。HUD 侧 `tick()` 每 2s（有新数据时）把当前战绩快照写 `danyria_career_live.json`（`_maybe_write_career`，原子写）；主程序每 3s 读取，靠**累计计数归零 / 数据变旧**判定回合边界，回合结束落库 `danyria_career.db`（表 `rounds`）。空局（无击杀、评分未变）不记录。页面：5 张汇总卡（总局数 / 最高分 / 平均分 / 特感+Tank / 总伤害）+ 评分趋势折线（`CareerChart`）+ 最近 40 局明细表（时间/评分/等级/击杀普特WT/伤害/死亡/服务器）+ 刷新 / 清空。每局附带进服时的服务器地址（与崩溃守护共用 `_last_server_addr`）。
+- 文案集中在 `CAREER_TEXT`（key→{lang}，9 语言齐全）；`career_tr` 解析、`_retranslate_career` 随语言刷新。仅标准库（`sqlite3` / `subprocess` / `os`），打包无新依赖。
+
+### English
+
+- **Crash guard + auto-reconnect** (main app, stdlib only): joining from the Servers panel records `ip:port` (`last_server` in `danyria_app_config.json`). When "Auto-reconnect on crash" is checked, `left4dead2.exe` is polled via `tasklist` every 5s. Rule chain: enabled + joined this session + game ran ≥15s (avoids boot-loop) → **~10s grace** after it exits (uncheck to cancel) → `steam://connect/<ip:port>` back to the last server; **60s cooldown + max 3 relaunches**. No polling at all when disabled. See `_crash_tick` / `_is_game_running` / `_toggle_crash_guard` / `_init_danyria_extras`.
+- **Career stats** (main-app SQLite + self-drawn QPainter chart): new 5th "Career" panel. The HUD's `tick()` writes a stats snapshot to `danyria_career_live.json` every 2s when data is fresh (`_maybe_write_career`, atomic write); the main app reads it every 3s and detects round boundaries by **cumulative-counter resets / stale data**, committing finished rounds to `danyria_career.db` (table `rounds`). Empty rounds (no kills, score unchanged) aren't logged. Page: 5 summary cards (rounds / best / avg / special+tank / total damage) + a score-trend line (`CareerChart`) + a recent-40-rounds table (time/score/grade/kills C·S·W·T/damage/deaths/server) + refresh / clear. Each round also stores the joined server address (shared `_last_server_addr`).
+- Strings live in `CAREER_TEXT` (key→{lang}, all 9 languages); `career_tr` resolves and `_retranslate_career` refreshes on language switch. Stdlib-only (`sqlite3` / `subprocess` / `os`), no new packaging deps.

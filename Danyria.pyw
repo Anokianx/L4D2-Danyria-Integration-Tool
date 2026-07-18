@@ -9,6 +9,7 @@ import io
 import os
 import re
 import json
+import sqlite3
 import time
 import locale
 import struct
@@ -66,7 +67,7 @@ NativeQMessageBox = QMessageBox
 # Application constants and file-format constants.
 # ---------------------------------------------------------------------------
 APP_NAME = "Danyria"
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 CONFIG_NAME = "danyria_config.json"
 VPK_MAGIC = 0x55AA1234
 DIR_INDEX = 0x7FFF
@@ -5049,6 +5050,56 @@ def candidate_l4d2_paths() -> list[Path]:
 # 自绘控件和视觉效果控件。
 # Custom painted widgets and visual-effect widgets.
 # ---------------------------------------------------------------------------
+class CareerChart(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(150)
+        self._scores = []
+
+    def set_scores(self, scores):
+        self._scores = [max(0.0, min(100.0, float(s))) for s in (scores or [])]
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        w, h = self.width(), self.height()
+        line = QColor("#6FADE8")
+        grid = QColor(255, 255, 255, 26)
+        muted = QColor(170, 190, 215)
+        x0, x1, y0, y1 = 30, w - 10, 10, h - 20
+        p.setPen(QPen(grid, 1))
+        for gy in (0.0, 0.5, 1.0):
+            yy = int(y1 - (y1 - y0) * gy)
+            p.drawLine(x0, yy, x1, yy)
+        f = QFont("Segoe UI")
+        f.setPixelSize(9)
+        p.setFont(f)
+        p.setPen(QPen(muted))
+        p.drawText(4, y0 + 8, "100")
+        p.drawText(10, y1 + 4, "0")
+        n = len(self._scores)
+        if n == 0:
+            p.setPen(QPen(muted))
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "—")
+            p.end()
+            return
+        pts = []
+        step = (x1 - x0) / float(max(1, n - 1))
+        for i, s in enumerate(self._scores):
+            px = int(x0 + step * i) if n > 1 else (x0 + x1) // 2
+            py = int(y1 - (y1 - y0) * (s / 100.0))
+            pts.append((px, py))
+        p.setPen(QPen(line, 2))
+        for i in range(len(pts) - 1):
+            p.drawLine(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1])
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(line))
+        for px, py in pts:
+            p.drawEllipse(px - 2, py - 2, 4, 4)
+        p.end()
+
+
 class ImageLabel(QLabel):
     _pixmap_cache = {}
 
@@ -6788,12 +6839,14 @@ QCheckBox::indicator:disabled {{
         self.mods_page_btn = self.button(self.t("page_mods"), lambda: self.switch_main_page("mods"))
         self.weapons_page_btn = self.button(self.t("page_weapons"), lambda: self.switch_main_page("weapons"))
         self.servers_page_btn = self.button(self.srv_tr("page"), lambda: self.switch_main_page("servers"))
-        for _nav_btn in (self.plugins_page_btn, self.mods_page_btn, self.weapons_page_btn, self.servers_page_btn):
+        self.career_page_btn = self.button(self.career_tr("page"), lambda: self.switch_main_page("career"))
+        for _nav_btn in (self.plugins_page_btn, self.mods_page_btn, self.weapons_page_btn, self.servers_page_btn, self.career_page_btn):
             _nav_btn.setProperty("navButton", True)
         self.page_nav.addWidget(self.plugins_page_btn)
         self.page_nav.addWidget(self.mods_page_btn)
         self.page_nav.addWidget(self.weapons_page_btn)
         self.page_nav.addWidget(self.servers_page_btn)
+        self.page_nav.addWidget(self.career_page_btn)
         self.page_nav.addStretch(1)
         content_l.addLayout(self.page_nav)
 
@@ -7101,10 +7154,18 @@ QCheckBox::indicator:disabled {{
         self.servers_page_l.setSpacing(8)
         self.build_servers_page()
 
+        self.career_page = QWidget()
+        self.career_page_l = QVBoxLayout(self.career_page)
+        self.career_page_l.setContentsMargins(0, 0, 0, 0)
+        self.career_page_l.setSpacing(8)
+        self.build_career_page()
+
         self.main_stack.addWidget(self.plugins_page)
         self.main_stack.addWidget(self.mods_page)
         self.main_stack.addWidget(self.weapons_page)
         self.main_stack.addWidget(self.servers_page)
+        self.main_stack.addWidget(self.career_page)
+        self._init_danyria_extras()
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
@@ -8563,6 +8624,8 @@ QFrame#ThemedDialogFrame QTextEdit {{
             target_widget = self.weapons_page
         elif page == "servers" and hasattr(self, "servers_page"):
             target_widget = self.servers_page
+        elif page == "career" and hasattr(self, "career_page"):
+            target_widget = self.career_page
         else:
             page = "plugins"
             target_widget = self.plugins_page
@@ -8574,7 +8637,9 @@ QFrame#ThemedDialogFrame QTextEdit {{
         if page == "weapons" and hasattr(self, "weapons_page") and not self.weapon_records:
             self.scan_weapon_scripts(silent=True)
         if page == "servers" and hasattr(self, "servers_page"):
-            self._srv_ensure_browser()    
+            self._srv_ensure_browser()
+        if page == "career" and hasattr(self, "career_page"):
+            self._career_refresh_page()
         pairs = [
             (self.plugins_page_btn, page == "plugins"),
             (self.mods_page_btn, page == "mods"),
@@ -8583,6 +8648,8 @@ QFrame#ThemedDialogFrame QTextEdit {{
             pairs.append((self.weapons_page_btn, page == "weapons"))
         if hasattr(self, "servers_page_btn"):
             pairs.append((self.servers_page_btn, page == "servers"))
+        if hasattr(self, "career_page_btn"):
+            pairs.append((self.career_page_btn, page == "career"))
         for b, active in pairs:
             b.setProperty("navActive", active)
             b.style().unpolish(b)
@@ -8842,6 +8909,11 @@ QFrame#ThemedDialogFrame QTextEdit {{
         bl_row.addWidget(self.srv_bl_check, 0)
         bl_row.addWidget(self.srv_bl_edit_btn, 0)
         bl_row.addWidget(self.srv_bl_block_btn, 0)
+        self.srv_guard_check = QCheckBox(self.career_tr("guard"))
+        self.srv_guard_check.setToolTip(self.career_tr("guard_tip"))
+        self.srv_guard_check.setChecked(bool(self._load_app_config().get("crash_guard", False)))
+        self.srv_guard_check.toggled.connect(self._toggle_crash_guard)
+        bl_row.addWidget(self.srv_guard_check, 0)
         bl_row.addStretch(1)
         L.addLayout(bl_row)
 
@@ -8984,7 +9056,20 @@ QFrame#ThemedDialogFrame QTextEdit {{
         if not url:
             return
         try:
-            os.startfile(url)  
+            if url.startswith("steam://connect/"):
+                self._last_server_addr = url.split("steam://connect/", 1)[1]
+                self._crash_armed = True
+                self._game_first_seen = 0
+                self._game_last_running = 0
+                self._game_gone_since = 0
+                self._crash_relaunches = 0
+                cfg = self._load_app_config()
+                cfg["last_server"] = self._last_server_addr
+                self._save_app_config(cfg)
+        except Exception:
+            pass
+        try:
+            os.startfile(url)
         except Exception:
             try:
                 webbrowser.open(url)
@@ -9012,8 +9097,390 @@ QFrame#ThemedDialogFrame QTextEdit {{
             self.srv_table.setHorizontalHeaderLabels([
                 self.srv_tr("c_name"), self.srv_tr("c_map"), self.srv_tr("c_players"),
                 self.srv_tr("c_ping"), self.srv_tr("c_source")])
+            self._retranslate_career()
         except Exception:
             pass
+
+    # ===================== 生涯战绩 + 崩溃守护 / Career stats + crash guard =====================
+    CAREER_TEXT = {
+        "page": {"zh": "生涯", "zh_CN": "生涯", "en": "Career", "ja": "キャリア", "ko": "커리어", "ru": "Карьера", "de": "Karriere", "fr": "Carrière", "es": "Carrera"},
+        "title": {"zh": "生涯战绩", "zh_CN": "生涯战绩", "en": "Career Stats", "ja": "キャリア戦績", "ko": "커리어 전적", "ru": "Статистика карьеры", "de": "Karriere-Statistik", "fr": "Statistiques de carrière", "es": "Estadísticas de carrera"},
+        "subtitle": {
+            "zh": "自动记录每局的评分、击杀、伤害与死亡，趋势与历史一目了然。数据来自 HUD，需要开启对应面板（评分/敌人）。",
+            "zh_CN": "自动记录每局的评分、击杀、伤害与死亡，趋势与历史一目了然。数据来自 HUD，需要开启对应面板（评分/敌人）。",
+            "en": "Auto-logs each round's score, kills, damage and deaths; trends and history at a glance. Data comes from the HUD, so the relevant panels must be enabled.",
+            "ja": "各ラウンドのスコア・キル・ダメージ・死亡を自動記録。傾向と履歴が一目で分かります。データは HUD 由来のため、対応パネル（スコア/敵）を有効にしてください。",
+            "ko": "매 라운드의 점수·킬·피해·사망을 자동 기록하여 추세와 기록을 한눈에 볼 수 있습니다. 데이터는 HUD에서 오므로 해당 패널(점수/적)을 켜야 합니다.",
+            "ru": "Автоматически записывает очки, убийства, урон и смерти за каждый раунд; тренды и история как на ладони. Данные берутся из HUD, поэтому нужные панели должны быть включены.",
+            "de": "Protokolliert automatisch Punkte, Kills, Schaden und Tode jeder Runde; Trends und Verlauf auf einen Blick. Die Daten stammen vom HUD, also müssen die entsprechenden Panels aktiviert sein.",
+            "fr": "Enregistre automatiquement le score, les éliminations, les dégâts et les morts de chaque manche ; tendances et historique en un coup d'œil. Les données proviennent du HUD, activez donc les panneaux concernés.",
+            "es": "Registra automáticamente la puntuación, bajas, daño y muertes de cada ronda; tendencias e historial de un vistazo. Los datos provienen del HUD, así que activa los paneles correspondientes.",
+        },
+        "rounds": {"zh": "总局数", "zh_CN": "总局数", "en": "Rounds", "ja": "総ラウンド", "ko": "총 라운드", "ru": "Раунды", "de": "Runden", "fr": "Manches", "es": "Rondas"},
+        "best": {"zh": "最高分", "zh_CN": "最高分", "en": "Best score", "ja": "最高スコア", "ko": "최고 점수", "ru": "Лучший счёт", "de": "Beste Punktzahl", "fr": "Meilleur score", "es": "Mejor puntuación"},
+        "avg": {"zh": "平均分", "zh_CN": "平均分", "en": "Avg score", "ja": "平均スコア", "ko": "평균 점수", "ru": "Средний счёт", "de": "Ø Punktzahl", "fr": "Score moyen", "es": "Puntuación media"},
+        "kills": {"zh": "特感+Tank", "zh_CN": "特感+Tank", "en": "Special+Tank", "ja": "特殊+Tank", "ko": "특수+탱크", "ru": "Особые+Танк", "de": "Spezial+Tank", "fr": "Spéciaux+Tank", "es": "Especiales+Tank"},
+        "damage": {"zh": "总伤害", "zh_CN": "总伤害", "en": "Total damage", "ja": "総ダメージ", "ko": "총 피해", "ru": "Всего урона", "de": "Gesamtschaden", "fr": "Dégâts totaux", "es": "Daño total"},
+        "c_time": {"zh": "时间", "zh_CN": "时间", "en": "Time", "ja": "時刻", "ko": "시간", "ru": "Время", "de": "Zeit", "fr": "Heure", "es": "Hora"},
+        "c_score": {"zh": "评分", "zh_CN": "评分", "en": "Score", "ja": "スコア", "ko": "점수", "ru": "Счёт", "de": "Punkte", "fr": "Score", "es": "Puntuación"},
+        "c_grade": {"zh": "等级", "zh_CN": "等级", "en": "Grade", "ja": "評価", "ko": "등급", "ru": "Ранг", "de": "Note", "fr": "Rang", "es": "Grado"},
+        "c_kills": {"zh": "击杀 普/特/W/T", "zh_CN": "击杀 普/特/W/T", "en": "Kills C/S/W/T", "ja": "キル C/S/W/T", "ko": "킬 C/S/W/T", "ru": "Убийства C/S/W/T", "de": "Kills C/S/W/T", "fr": "Élim. C/S/W/T", "es": "Bajas C/S/W/T"},
+        "c_dmg": {"zh": "伤害", "zh_CN": "伤害", "en": "Damage", "ja": "ダメージ", "ko": "피해", "ru": "Урон", "de": "Schaden", "fr": "Dégâts", "es": "Daño"},
+        "c_deaths": {"zh": "死亡", "zh_CN": "死亡", "en": "Deaths", "ja": "死亡", "ko": "사망", "ru": "Смерти", "de": "Tode", "fr": "Morts", "es": "Muertes"},
+        "c_server": {"zh": "服务器", "zh_CN": "服务器", "en": "Server", "ja": "サーバー", "ko": "서버", "ru": "Сервер", "de": "Server", "fr": "Serveur", "es": "Servidor"},
+        "refresh": {"zh": "刷新", "zh_CN": "刷新", "en": "Refresh", "ja": "更新", "ko": "새로고침", "ru": "Обновить", "de": "Aktualisieren", "fr": "Actualiser", "es": "Actualizar"},
+        "clear": {"zh": "清空历史", "zh_CN": "清空历史", "en": "Clear history", "ja": "履歴を消去", "ko": "기록 지우기", "ru": "Очистить историю", "de": "Verlauf löschen", "fr": "Effacer l'historique", "es": "Borrar historial"},
+        "clear_q": {"zh": "确定清空全部生涯记录？此操作不可恢复。", "zh_CN": "确定清空全部生涯记录？此操作不可恢复。", "en": "Clear all career records? This cannot be undone.", "ja": "すべてのキャリア記録を消去しますか？この操作は元に戻せません。", "ko": "모든 커리어 기록을 지우시겠습니까? 이 작업은 되돌릴 수 없습니다.", "ru": "Очистить все записи карьеры? Это действие необратимо.", "de": "Alle Karriere-Einträge löschen? Dies kann nicht rückgängig gemacht werden.", "fr": "Effacer tous les enregistrements de carrière ? Cette action est irréversible.", "es": "¿Borrar todos los registros de carrera? Esta acción no se puede deshacer."},
+        "guard": {"zh": "崩溃自动重连", "zh_CN": "崩溃自动重连", "en": "Auto-reconnect on crash", "ja": "クラッシュ時に自動再接続", "ko": "크래시 시 자동 재접속", "ru": "Автопереподключение при вылете", "de": "Auto-Reconnect bei Absturz", "fr": "Reconnexion auto après plantage", "es": "Reconexión auto tras fallo"},
+        "guard_tip": {
+            "zh": "从服务器面板进服后，若 L4D2 崩溃退出，约10秒后自动通过 Steam 重连到上个服务器（取消勾选即可停止）。",
+            "zh_CN": "从服务器面板进服后，若 L4D2 崩溃退出，约10秒后自动通过 Steam 重连到上个服务器（取消勾选即可停止）。",
+            "en": "After joining from the Servers panel, auto-reconnect to the last server via Steam ~10s after L4D2 exits (uncheck to stop).",
+            "ja": "サーバーパネルから参加後、L4D2 がクラッシュ終了すると約10秒後に Steam 経由で前回のサーバーへ自動再接続します（チェックを外すと停止）。",
+            "ko": "서버 패널에서 접속한 뒤 L4D2가 비정상 종료되면 약 10초 후 Steam으로 이전 서버에 자동 재접속합니다(체크 해제 시 중지).",
+            "ru": "После входа с панели серверов, если L4D2 вылетит, примерно через 10 с произойдёт автопереподключение к последнему серверу через Steam (снимите галочку, чтобы остановить).",
+            "de": "Nach dem Beitritt über das Server-Panel wird ~10 s nach einem Absturz von L4D2 automatisch per Steam zum letzten Server neu verbunden (zum Stoppen abwählen).",
+            "fr": "Après avoir rejoint depuis le panneau Serveurs, reconnexion automatique au dernier serveur via Steam ~10 s après un plantage de L4D2 (décochez pour arrêter).",
+            "es": "Tras unirte desde el panel de servidores, se reconecta automáticamente al último servidor vía Steam ~10 s después de que L4D2 se cierre por fallo (desmarca para detener).",
+        },
+        "guard_pending": {"zh": "检测到 L4D2 已退出，约10秒后自动重连…（取消勾选可停止）", "zh_CN": "检测到 L4D2 已退出，约10秒后自动重连…（取消勾选可停止）", "en": "L4D2 exited; auto-reconnecting in ~10s… (uncheck to stop)", "ja": "L4D2 の終了を検出。約10秒後に自動再接続します…（チェックを外すと停止）", "ko": "L4D2 종료 감지. 약 10초 후 자동 재접속합니다…(체크 해제 시 중지)", "ru": "L4D2 закрылся; автопереподключение через ~10 с… (снимите галочку, чтобы остановить)", "de": "L4D2 beendet; Auto-Reconnect in ~10 s… (zum Stoppen abwählen)", "fr": "L4D2 a quitté ; reconnexion auto dans ~10 s… (décochez pour arrêter)", "es": "L4D2 se cerró; reconexión auto en ~10 s… (desmarca para detener)"},
+        "guard_reconnect": {"zh": "正在通过 Steam 重连到 %s …", "zh_CN": "正在通过 Steam 重连到 %s …", "en": "Reconnecting to %s via Steam…", "ja": "Steam 経由で %s に再接続中…", "ko": "Steam으로 %s 에 재접속 중…", "ru": "Переподключение к %s через Steam…", "de": "Verbinde erneut zu %s über Steam…", "fr": "Reconnexion à %s via Steam…", "es": "Reconectando a %s vía Steam…"},
+    }
+
+    def career_tr(self, key: str) -> str:
+        entry = self.CAREER_TEXT.get(key, {})
+        return entry.get(self.current_language()) or entry.get("en") or key
+
+    def _app_config_path(self):
+        try:
+            return self.hud_config_path().with_name("danyria_app_config.json")
+        except Exception:
+            return Path("danyria_app_config.json")
+
+    def _load_app_config(self) -> dict:
+        try:
+            p = self._app_config_path()
+            if p.exists():
+                d = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(d, dict):
+                    return d
+        except Exception:
+            pass
+        return {}
+
+    def _save_app_config(self, d: dict):
+        try:
+            p = self._app_config_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _career_live_path(self):
+        try:
+            return self.hud_config_path().with_name("danyria_career_live.json")
+        except Exception:
+            return Path("danyria_career_live.json")
+
+    def _career_db(self):
+        conn = getattr(self, "_career_conn", None)
+        if conn is not None:
+            return conn
+        p = self.hud_config_path().with_name("danyria_career.db")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(p))
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS rounds ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, started REAL, ended REAL, duration REAL,"
+            "score REAL, grade TEXT, common INTEGER, special INTEGER, witch INTEGER, tank INTEGER,"
+            "damage_done INTEGER, damage_taken INTEGER, incaps INTEGER, deaths INTEGER, revives INTEGER, server TEXT)")
+        conn.commit()
+        self._career_conn = conn
+        return conn
+
+    CAREER_KEYS = ("common", "special", "witch", "tank", "damage_done", "damage_taken", "incaps", "deaths", "revives")
+
+    def _career_meaningful(self, d) -> bool:
+        if abs(float(d.get("score", 60) or 60) - 60.0) > 0.5:
+            return True
+        return any(int(d.get(k, 0) or 0) > 0 for k in ("common", "special", "witch", "tank", "damage_done", "incaps", "deaths"))
+
+    def _career_commit(self, d, ended):
+        try:
+            started = float(d.get("started", ended))
+            row = (started, float(ended), max(0.0, float(ended) - started),
+                   float(d.get("score", 60) or 60), str(d.get("grade", "") or ""),
+                   int(d.get("common", 0) or 0), int(d.get("special", 0) or 0),
+                   int(d.get("witch", 0) or 0), int(d.get("tank", 0) or 0),
+                   int(d.get("damage_done", 0) or 0), int(d.get("damage_taken", 0) or 0),
+                   int(d.get("incaps", 0) or 0), int(d.get("deaths", 0) or 0),
+                   int(d.get("revives", 0) or 0), str(getattr(self, "_last_server_addr", "") or ""))
+            conn = self._career_db()
+            conn.execute(
+                "INSERT INTO rounds (started,ended,duration,score,grade,common,special,witch,tank,"
+                "damage_done,damage_taken,incaps,deaths,revives,server) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+            conn.commit()
+        except Exception:
+            return
+        try:
+            if hasattr(self, "career_page") and self.main_stack.currentWidget() is self.career_page:
+                self._career_refresh_page()
+        except Exception:
+            pass
+
+    def _career_tick(self):
+        now = time.time()
+        snap = None
+        try:
+            p = self._career_live_path()
+            if p.exists():
+                raw = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(raw, dict) and (now - float(raw.get("ts", 0) or 0)) < 12:
+                    snap = raw
+        except Exception:
+            snap = None
+        cur = getattr(self, "_career_cur", None)
+        keys = self.CAREER_KEYS
+        if snap is None:
+            if cur and self._career_meaningful(cur):
+                self._career_commit(cur, now)
+            self._career_cur = None
+            return
+
+        def ssum(d):
+            return sum(int(d.get(k, 0) or 0) for k in keys)
+
+        if cur is None:
+            c = dict(snap)
+            c["started"] = now
+            self._career_cur = c
+            return
+        if ssum(snap) < ssum(cur) - 3:
+            if self._career_meaningful(cur):
+                self._career_commit(cur, now)
+            c = dict(snap)
+            c["started"] = now
+            self._career_cur = c
+            return
+        merged = dict(snap)
+        merged["started"] = cur.get("started", now)
+        for k in keys:
+            merged[k] = max(int(cur.get(k, 0) or 0), int(snap.get(k, 0) or 0))
+        self._career_cur = merged
+
+    def _career_recent(self, limit=40):
+        try:
+            cur = self._career_db().execute(
+                "SELECT started,score,grade,common,special,witch,tank,damage_done,deaths,server "
+                "FROM rounds ORDER BY id DESC LIMIT ?", (int(limit),))
+            return cur.fetchall()
+        except Exception:
+            return []
+
+    def _career_summary(self):
+        try:
+            r = self._career_db().execute(
+                "SELECT COUNT(*), MAX(score), AVG(score), SUM(special+tank), SUM(damage_done) FROM rounds").fetchone()
+            return {"rounds": int(r[0] or 0), "best": float(r[1] or 0), "avg": float(r[2] or 0),
+                    "kills": int(r[3] or 0), "damage": int(r[4] or 0)}
+        except Exception:
+            return {"rounds": 0, "best": 0.0, "avg": 0.0, "kills": 0, "damage": 0}
+
+    def _career_clear(self):
+        if QMessageBox.question(self, self.career_tr("clear"), self.career_tr("clear_q")) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            conn = self._career_db()
+            conn.execute("DELETE FROM rounds")
+            conn.commit()
+        except Exception:
+            pass
+        self._career_refresh_page()
+
+    def build_career_page(self):
+        L = self.career_page_l
+        self.career_title = QLabel(self.career_tr("title"))
+        self.career_title.setObjectName("SectionTitle")
+        self.career_sub = QLabel(self.career_tr("subtitle"))
+        self.career_sub.setObjectName("Muted")
+        self.career_sub.setWordWrap(True)
+        L.addWidget(self.career_title)
+        L.addWidget(self.career_sub)
+
+        cards = QHBoxLayout()
+        cards.setSpacing(10)
+        self.career_cards = {}
+        for key in ("rounds", "best", "avg", "kills", "damage"):
+            card = QFrame(objectName="PathCard")
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(12, 10, 12, 10)
+            cl.setSpacing(2)
+            val = QLabel("-")
+            val.setObjectName("SectionTitle")
+            lab = QLabel(self.career_tr(key))
+            lab.setObjectName("TinyText")
+            cl.addWidget(val)
+            cl.addWidget(lab)
+            cards.addWidget(card, 1)
+            self.career_cards[key] = (val, lab)
+        L.addLayout(cards)
+
+        self.career_chart = CareerChart()
+        L.addWidget(self.career_chart)
+
+        self.career_table = QTableWidget(0, 7)
+        self.career_table.setHorizontalHeaderLabels([
+            self.career_tr("c_time"), self.career_tr("c_score"), self.career_tr("c_grade"),
+            self.career_tr("c_kills"), self.career_tr("c_dmg"), self.career_tr("c_deaths"), self.career_tr("c_server")])
+        try:
+            self.career_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+            self.career_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        except Exception:
+            pass
+        self.career_table.verticalHeader().setVisible(False)
+        self.make_columns_resizable(self.career_table, [120, 56, 52, 130, 78, 58, 130])
+        L.addWidget(self.career_table, 1)
+
+        btns = QHBoxLayout()
+        self.career_refresh_btn = self.button(self.career_tr("refresh"), self._career_refresh_page)
+        self.career_clear_btn = self.button(self.career_tr("clear"), self._career_clear)
+        btns.addWidget(self.career_refresh_btn)
+        btns.addWidget(self.career_clear_btn)
+        btns.addStretch(1)
+        L.addLayout(btns)
+        self._career_refresh_page()
+
+    def _career_refresh_page(self):
+        if not hasattr(self, "career_table"):
+            return
+        s = self._career_summary()
+        has = s["rounds"] > 0
+        fmt = {
+            "rounds": str(s["rounds"]),
+            "best": ("%.1f" % s["best"]) if has else "-",
+            "avg": ("%.1f" % s["avg"]) if has else "-",
+            "kills": str(s["kills"]),
+            "damage": str(s["damage"]),
+        }
+        for key, (val, lab) in self.career_cards.items():
+            val.setText(fmt.get(key, "-"))
+            lab.setText(self.career_tr(key))
+        rows = self._career_recent(40)
+        self.career_chart.set_scores([r[1] for r in reversed(rows)])
+        self.career_table.setRowCount(0)
+        for r in rows:
+            started, score, grade, common, special, witch, tank, dmg, deaths, server = r
+            i = self.career_table.rowCount()
+            self.career_table.insertRow(i)
+            tstr = time.strftime("%m-%d %H:%M", time.localtime(float(started or 0)))
+            kills = "%d/%d/%d/%d" % (int(common or 0), int(special or 0), int(witch or 0), int(tank or 0))
+            vals = [tstr, "%.1f" % float(score or 0), str(grade or ""), kills,
+                    str(int(dmg or 0)), str(int(deaths or 0)), str(server or "-")]
+            for c, v in enumerate(vals):
+                self.career_table.setItem(i, c, QTableWidgetItem(v))
+
+    def _retranslate_career(self):
+        if not hasattr(self, "career_title"):
+            return
+        try:
+            if hasattr(self, "career_page_btn"):
+                self.career_page_btn.setText(self.career_tr("page"))
+            self.career_title.setText(self.career_tr("title"))
+            self.career_sub.setText(self.career_tr("subtitle"))
+            self.career_refresh_btn.setText(self.career_tr("refresh"))
+            self.career_clear_btn.setText(self.career_tr("clear"))
+            self.career_table.setHorizontalHeaderLabels([
+                self.career_tr("c_time"), self.career_tr("c_score"), self.career_tr("c_grade"),
+                self.career_tr("c_kills"), self.career_tr("c_dmg"), self.career_tr("c_deaths"), self.career_tr("c_server")])
+            if hasattr(self, "srv_guard_check"):
+                self.srv_guard_check.setText(self.career_tr("guard"))
+                self.srv_guard_check.setToolTip(self.career_tr("guard_tip"))
+            self._career_refresh_page()
+        except Exception:
+            pass
+
+    def _is_game_running(self) -> bool:
+        try:
+            proc = subprocess.run(["tasklist", "/FI", "IMAGENAME eq left4dead2.exe"],
+                                  capture_output=True, text=True, errors="ignore", timeout=3,
+                                  creationflags=self._subprocess_no_window_flags(),
+                                  startupinfo=self._subprocess_startupinfo())
+            return "left4dead2.exe" in (proc.stdout or "").lower()
+        except Exception:
+            return False
+
+    def _toggle_crash_guard(self, checked):
+        self.crash_guard_enabled = bool(checked)
+        cfg = self._load_app_config()
+        cfg["crash_guard"] = bool(checked)
+        self._save_app_config(cfg)
+
+    def _crash_tick(self):
+        if not getattr(self, "crash_guard_enabled", False):
+            return
+        now = time.time()
+        if self._is_game_running():
+            if getattr(self, "_game_first_seen", 0) == 0:
+                self._game_first_seen = now
+            self._game_last_running = now
+            self._game_gone_since = 0
+            return
+        if not (getattr(self, "crash_guard_enabled", False) and getattr(self, "_crash_armed", False)
+                and getattr(self, "_last_server_addr", "")):
+            return
+        if getattr(self, "_game_first_seen", 0) == 0:
+            return
+        if (getattr(self, "_game_last_running", 0) - self._game_first_seen) < 15:
+            return
+        if getattr(self, "_crash_relaunches", 0) >= 3:
+            return
+        if getattr(self, "_game_gone_since", 0) == 0:
+            self._game_gone_since = now
+            try:
+                self.srv_status.setText(self.career_tr("guard_pending"))
+            except Exception:
+                pass
+            return
+        if now - self._game_gone_since < 10:
+            return
+        if now - getattr(self, "_crash_last_reconnect", 0.0) < 60:
+            return
+        addr = self._last_server_addr
+        url = "steam://connect/%s" % addr
+        try:
+            os.startfile(url)
+        except Exception:
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+        self._crash_relaunches = getattr(self, "_crash_relaunches", 0) + 1
+        self._crash_last_reconnect = now
+        self._game_first_seen = 0
+        self._game_last_running = 0
+        self._game_gone_since = 0
+        try:
+            self.srv_status.setText(self.career_tr("guard_reconnect") % addr)
+        except Exception:
+            pass
+
+    def _init_danyria_extras(self):
+        cfg = self._load_app_config()
+        self.crash_guard_enabled = bool(cfg.get("crash_guard", False))
+        self._last_server_addr = str(cfg.get("last_server", "") or "")
+        self._crash_armed = bool(self._last_server_addr)
+        self._game_first_seen = 0
+        self._game_last_running = 0
+        self._game_gone_since = 0
+        self._crash_relaunches = 0
+        self._crash_last_reconnect = 0.0
+        self._career_cur = None
+        self._career_timer = QTimer(self)
+        self._career_timer.timeout.connect(self._career_tick)
+        self._career_timer.start(3000)
+        self._crash_timer = QTimer(self)
+        self._crash_timer.timeout.connect(self._crash_tick)
+        self._crash_timer.start(5000)
 
     def build_weapons_page(self):
         splitter = QSplitter(Qt.Orientation.Horizontal)
