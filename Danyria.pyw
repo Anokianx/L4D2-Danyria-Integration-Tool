@@ -41,10 +41,10 @@ try:
     from PySide6.QtGui import QIcon, QPixmap, QColor, QPainter, QPen, QBrush, QPainterPath, QFont, QFontMetrics
     from PySide6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QLabel, QPushButton, QLineEdit,
-        QFileDialog, QMessageBox, QComboBox, QTableWidget, QTableWidgetItem,
+        QFileDialog, QMessageBox, QComboBox, QColorDialog, QTableWidget, QTableWidgetItem,
         QAbstractItemView, QHeaderView, QVBoxLayout, QHBoxLayout, QGridLayout, QLayout, QFrame,
-        QTextEdit, QSplitter, QSizeGrip, QSizePolicy, QGraphicsOpacityEffect,
-        QDialog, QCheckBox, QStackedWidget, QScrollArea
+        QTextEdit, QSplitter, QSizeGrip, QSizePolicy, QGraphicsOpacityEffect, QSlider,
+        QDialog, QCheckBox, QStackedWidget, QScrollArea, QAbstractSpinBox
     )
 except Exception:
     from PyQt6.QtCore import (
@@ -54,10 +54,10 @@ except Exception:
     from PyQt6.QtGui import QIcon, QPixmap, QColor, QPainter, QPen, QBrush, QPainterPath, QFont, QFontMetrics
     from PyQt6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QLabel, QPushButton, QLineEdit,
-        QFileDialog, QMessageBox, QComboBox, QTableWidget, QTableWidgetItem,
+        QFileDialog, QMessageBox, QComboBox, QColorDialog, QTableWidget, QTableWidgetItem,
         QAbstractItemView, QHeaderView, QVBoxLayout, QHBoxLayout, QGridLayout, QLayout, QFrame,
-        QTextEdit, QSplitter, QSizeGrip, QSizePolicy, QGraphicsOpacityEffect,
-        QDialog, QCheckBox, QStackedWidget, QScrollArea
+        QTextEdit, QSplitter, QSizeGrip, QSizePolicy, QGraphicsOpacityEffect, QSlider,
+        QDialog, QCheckBox, QStackedWidget, QScrollArea, QAbstractSpinBox
     )
 
 NativeQMessageBox = QMessageBox
@@ -67,7 +67,7 @@ NativeQMessageBox = QMessageBox
 # Application constants and file-format constants.
 # ---------------------------------------------------------------------------
 APP_NAME = "Danyria"
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.2.3"
 CONFIG_NAME = "danyria_config.json"
 VPK_MAGIC = 0x55AA1234
 DIR_INDEX = 0x7FFF
@@ -4171,6 +4171,221 @@ I18N_HUD_STYLE = {
 }
 I18N = _merge_i18n_pack(I18N, I18N_HUD_STYLE)
 
+CROSSHAIR_STATIC_STYLES = ("plus", "dot", "circle", "x", "diamond")
+CROSSHAIR_DYNAMIC_STYLES = ("aimis",)
+CROSSHAIR_STYLES = CROSSHAIR_STATIC_STYLES + CROSSHAIR_DYNAMIC_STYLES
+
+I18N_CROSSHAIR = {
+    "zh": {
+        "plugin_crosshair_title": "AemeCross 准心插件",
+        "plugin_crosshair_subtitle": "外置透明准心，可自定义样式、颜色、大小和粗细。",
+        "crosshair_desc": "在屏幕上显示独立准心；默认锁定位置，需要调整时再开启自由拖拽。",
+        "hud_enable_crosshair": "启用准心",
+        "crosshair_window": "准心设置",
+        "crosshair_style": "样式",
+        "crosshair_style_plus": "十字",
+        "crosshair_style_dot": "圆点",
+        "crosshair_style_circle": "圆环",
+        "crosshair_style_x": "X 型",
+        "crosshair_style_diamond": "菱形",
+        "crosshair_style_aimis": "爱弥斯（动态）",
+        "crosshair_color": "颜色",
+        "crosshair_choose_color": "选择颜色",
+        "crosshair_size": "大小",
+        "crosshair_thickness": "粗细",
+        "crosshair_opacity": "透明度",
+        "crosshair_draggable": "自由拖拽",
+        "crosshair_reset_position": "重置位置",
+        "crosshair_save_settings": "保存准心设置",
+        "crosshair_position_reset": "准心位置已重置。",
+    },
+    "zh_CN": {
+        "plugin_crosshair_title": "AemeCross 准心插件",
+        "plugin_crosshair_subtitle": "外置透明准心，可自定义样式、颜色、大小和粗细。",
+        "crosshair_desc": "在屏幕上显示独立准心；默认锁定位置，需要调整时再开启自由拖拽。",
+        "hud_enable_crosshair": "启用准心",
+        "crosshair_window": "准心设置",
+        "crosshair_style": "样式",
+        "crosshair_style_plus": "十字",
+        "crosshair_style_dot": "圆点",
+        "crosshair_style_circle": "圆环",
+        "crosshair_style_x": "X 型",
+        "crosshair_style_diamond": "菱形",
+        "crosshair_style_aimis": "爱弥斯（动态）",
+        "crosshair_color": "颜色",
+        "crosshair_choose_color": "选择颜色",
+        "crosshair_size": "大小",
+        "crosshair_thickness": "粗细",
+        "crosshair_opacity": "透明度",
+        "crosshair_draggable": "自由拖拽",
+        "crosshair_reset_position": "重置位置",
+        "crosshair_save_settings": "保存准心设置",
+        "crosshair_position_reset": "准心位置已重置。",
+    },
+    "en": {
+        "plugin_crosshair_title": "AemeCross Crosshair Plugin",
+        "plugin_crosshair_subtitle": "Transparent external crosshair with customizable style, color, size, and thickness.",
+        "crosshair_desc": "Shows an independent on-screen crosshair. Free dragging is locked by default; enable it only while positioning.",
+        "hud_enable_crosshair": "Enable crosshair",
+        "crosshair_window": "Crosshair Settings",
+        "crosshair_style": "Style",
+        "crosshair_style_plus": "Plus",
+        "crosshair_style_dot": "Dot",
+        "crosshair_style_circle": "Circle",
+        "crosshair_style_x": "X",
+        "crosshair_style_diamond": "Diamond",
+        "crosshair_style_aimis": "Aemeath (Dynamic)",
+        "crosshair_color": "Color",
+        "crosshair_choose_color": "Choose color",
+        "crosshair_size": "Size",
+        "crosshair_thickness": "Thickness",
+        "crosshair_opacity": "Opacity",
+        "crosshair_draggable": "Free drag",
+        "crosshair_reset_position": "Reset position",
+        "crosshair_save_settings": "Save crosshair settings",
+        "crosshair_position_reset": "Crosshair position reset.",
+    },
+    "ja": {
+        "plugin_crosshair_title": "AemeCross クロスヘアプラグイン",
+        "plugin_crosshair_subtitle": "スタイル、色、サイズ、太さを調整できる透明クロスヘア。",
+        "crosshair_desc": "独立したクロスヘアを画面に表示します。自由ドラッグは既定でロックされ、位置調整時だけ有効にします。",
+        "hud_enable_crosshair": "クロスヘアを有効化",
+        "crosshair_window": "クロスヘア設定",
+        "crosshair_style": "スタイル",
+        "crosshair_style_plus": "十字",
+        "crosshair_style_dot": "ドット",
+        "crosshair_style_circle": "リング",
+        "crosshair_style_x": "X",
+        "crosshair_style_diamond": "ダイヤ",
+        "crosshair_style_aimis": "エイメス（動的）",
+        "crosshair_color": "色",
+        "crosshair_choose_color": "色を選択",
+        "crosshair_size": "サイズ",
+        "crosshair_thickness": "太さ",
+        "crosshair_opacity": "不透明度",
+        "crosshair_draggable": "自由ドラッグ",
+        "crosshair_reset_position": "位置をリセット",
+        "crosshair_save_settings": "クロスヘア設定を保存",
+        "crosshair_position_reset": "クロスヘア位置をリセットしました。",
+    },
+    "ko": {
+        "plugin_crosshair_title": "AemeCross 조준점 플러그인",
+        "plugin_crosshair_subtitle": "스타일, 색상, 크기, 두께를 조정할 수 있는 투명 조준점.",
+        "crosshair_desc": "독립 조준점을 화면에 표시합니다. 자유 드래그는 기본적으로 잠겨 있으며 위치 조정할 때만 켭니다.",
+        "hud_enable_crosshair": "조준점 사용",
+        "crosshair_window": "조준점 설정",
+        "crosshair_style": "스타일",
+        "crosshair_style_plus": "십자",
+        "crosshair_style_dot": "점",
+        "crosshair_style_circle": "원형",
+        "crosshair_style_x": "X",
+        "crosshair_style_diamond": "다이아몬드",
+        "crosshair_style_aimis": "에이메스(동적)",
+        "crosshair_color": "색상",
+        "crosshair_choose_color": "색상 선택",
+        "crosshair_size": "크기",
+        "crosshair_thickness": "두께",
+        "crosshair_opacity": "불투명도",
+        "crosshair_draggable": "자유 드래그",
+        "crosshair_reset_position": "위치 초기화",
+        "crosshair_save_settings": "조준점 설정 저장",
+        "crosshair_position_reset": "조준점 위치가 초기화되었습니다.",
+    },
+    "ru": {
+        "plugin_crosshair_title": "AemeCross Плагин прицела",
+        "plugin_crosshair_subtitle": "Прозрачный прицел с настройкой стиля, цвета, размера и толщины.",
+        "crosshair_desc": "Показывает отдельный прицел на экране. Свободное перетаскивание по умолчанию заблокировано; включайте его только для настройки позиции.",
+        "hud_enable_crosshair": "Включить прицел",
+        "crosshair_window": "Настройки прицела",
+        "crosshair_style": "Стиль",
+        "crosshair_style_plus": "Крест",
+        "crosshair_style_dot": "Точка",
+        "crosshair_style_circle": "Кольцо",
+        "crosshair_style_x": "X",
+        "crosshair_style_diamond": "Ромб",
+        "crosshair_style_aimis": "Эймис (динамический)",
+        "crosshair_color": "Цвет",
+        "crosshair_choose_color": "Выбрать цвет",
+        "crosshair_size": "Размер",
+        "crosshair_thickness": "Толщина",
+        "crosshair_opacity": "Непрозрачность",
+        "crosshair_draggable": "Свободное перетаскивание",
+        "crosshair_reset_position": "Сбросить позицию",
+        "crosshair_save_settings": "Сохранить настройки прицела",
+        "crosshair_position_reset": "Позиция прицела сброшена.",
+    },
+    "de": {
+        "plugin_crosshair_title": "AemeCross Fadenkreuz-Plugin",
+        "plugin_crosshair_subtitle": "Transparentes Fadenkreuz mit einstellbarem Stil, Farbe, Größe und Dicke.",
+        "crosshair_desc": "Zeigt ein eigenständiges Fadenkreuz auf dem Bildschirm. Freies Ziehen ist standardmäßig gesperrt und nur zum Positionieren gedacht.",
+        "hud_enable_crosshair": "Fadenkreuz aktivieren",
+        "crosshair_window": "Fadenkreuz-Einstellungen",
+        "crosshair_style": "Stil",
+        "crosshair_style_plus": "Plus",
+        "crosshair_style_dot": "Punkt",
+        "crosshair_style_circle": "Ring",
+        "crosshair_style_x": "X",
+        "crosshair_style_diamond": "Diamant",
+        "crosshair_style_aimis": "Aemeath (dynamisch)",
+        "crosshair_color": "Farbe",
+        "crosshair_choose_color": "Farbe wählen",
+        "crosshair_size": "Größe",
+        "crosshair_thickness": "Dicke",
+        "crosshair_opacity": "Deckkraft",
+        "crosshair_draggable": "Frei ziehen",
+        "crosshair_reset_position": "Position zurücksetzen",
+        "crosshair_save_settings": "Fadenkreuz speichern",
+        "crosshair_position_reset": "Fadenkreuzposition zurückgesetzt.",
+    },
+    "fr": {
+        "plugin_crosshair_title": "AemeCross Plugin de réticule",
+        "plugin_crosshair_subtitle": "Réticule transparent avec style, couleur, taille et épaisseur réglables.",
+        "crosshair_desc": "Affiche un réticule indépendant à l'écran. Le glisser libre est verrouillé par défaut; activez-le seulement pour placer le réticule.",
+        "hud_enable_crosshair": "Activer le réticule",
+        "crosshair_window": "Réglages du réticule",
+        "crosshair_style": "Style",
+        "crosshair_style_plus": "Croix",
+        "crosshair_style_dot": "Point",
+        "crosshair_style_circle": "Anneau",
+        "crosshair_style_x": "X",
+        "crosshair_style_diamond": "Losange",
+        "crosshair_style_aimis": "Aemeath (dynamique)",
+        "crosshair_color": "Couleur",
+        "crosshair_choose_color": "Choisir la couleur",
+        "crosshair_size": "Taille",
+        "crosshair_thickness": "Épaisseur",
+        "crosshair_opacity": "Opacité",
+        "crosshair_draggable": "Glisser libre",
+        "crosshair_reset_position": "Réinitialiser la position",
+        "crosshair_save_settings": "Enregistrer le réticule",
+        "crosshair_position_reset": "Position du réticule réinitialisée.",
+    },
+    "es": {
+        "plugin_crosshair_title": "AemeCross Plugin de mira",
+        "plugin_crosshair_subtitle": "Mira transparente con estilo, color, tamaño y grosor personalizables.",
+        "crosshair_desc": "Muestra una mira independiente en pantalla. El arrastre libre está bloqueado por defecto; actívalo solo para colocarla.",
+        "hud_enable_crosshair": "Activar mira",
+        "crosshair_window": "Ajustes de mira",
+        "crosshair_style": "Estilo",
+        "crosshair_style_plus": "Cruz",
+        "crosshair_style_dot": "Punto",
+        "crosshair_style_circle": "Aro",
+        "crosshair_style_x": "X",
+        "crosshair_style_diamond": "Diamante",
+        "crosshair_style_aimis": "Aemeath (dinámica)",
+        "crosshair_color": "Color",
+        "crosshair_choose_color": "Elegir color",
+        "crosshair_size": "Tamaño",
+        "crosshair_thickness": "Grosor",
+        "crosshair_opacity": "Opacidad",
+        "crosshair_draggable": "Arrastre libre",
+        "crosshair_reset_position": "Restablecer posición",
+        "crosshair_save_settings": "Guardar ajustes de mira",
+        "crosshair_position_reset": "Posición de la mira restablecida.",
+    },
+}
+I18N = _merge_i18n_pack(I18N, I18N_CROSSHAIR)
+
 
 # ---------------------------------------------------------------------------
 # 扫描结果和 VPK 索引使用的数据模型。
@@ -5331,12 +5546,13 @@ class DrawnIconButton(QPushButton):
 
 
 class CollapsibleSection(QFrame):
-    def __init__(self, title: str, subtitle: str = "", parent=None, expanded: bool = True):
+    def __init__(self, title: str, subtitle: str = "", parent=None, expanded: bool = True, version: str = ""):
         super().__init__(parent)
         self.setObjectName("TableCard")
         self._expanded = expanded
         self._title = title
         self._subtitle = subtitle
+        self._version = version
         self._animations = []
 
         root = QVBoxLayout(self)
@@ -5345,16 +5561,44 @@ class CollapsibleSection(QFrame):
 
         self.header_wrap = QFrame()
         self.header_wrap.setObjectName("CollapsibleHeaderFrame")
+        self.header_wrap.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.header_wrap.mousePressEvent = self._header_mouse_press
         header_l = QHBoxLayout(self.header_wrap)
         header_l.setContentsMargins(0, 0, 12, 0)
         header_l.setSpacing(8)
+        header_content = QWidget()
+        header_content.setCursor(Qt.CursorShape.PointingHandCursor)
+        header_content.mousePressEvent = self._header_mouse_press
+        header_content_l = QVBoxLayout(header_content)
+        header_content_l.setContentsMargins(0, 0, 0, 0)
+        header_content_l.setSpacing(0)
+        title_line = QHBoxLayout()
+        title_line.setContentsMargins(0, 0, 0, 0)
+        title_line.setSpacing(6)
         self.header = QPushButton()
         self.header.setObjectName("CollapsibleHeader")
         self.header.setCursor(Qt.CursorShape.PointingHandCursor)
         self.header.clicked.connect(self.toggle)
-        header_l.addWidget(self.header, 1)
+        title_line.addWidget(self.header, 0)
+        self.version_label = QLabel("")
+        self.version_label.setObjectName("PluginVersion")
+        self.version_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.version_label.mousePressEvent = self._header_mouse_press
+        self.version_label.setVisible(False)
+        title_line.addWidget(self.version_label, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        title_line.addStretch(1)
+        header_content_l.addLayout(title_line)
+        self.subtitle_label = QLabel("")
+        self.subtitle_label.setObjectName("CollapsibleSubtitle")
+        self.subtitle_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.subtitle_label.mousePressEvent = self._header_mouse_press
+        self.subtitle_label.setWordWrap(True)
+        header_content_l.addWidget(self.subtitle_label)
+        header_l.addWidget(header_content, 1)
         self.status_badge = QLabel("")
         self.status_badge.setObjectName("Pill")
+        self.status_badge.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.status_badge.mousePressEvent = self._header_mouse_press
         self.status_badge.setVisible(False)
         header_l.addWidget(self.status_badge, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
         root.addWidget(self.header_wrap)
@@ -5374,12 +5618,29 @@ class CollapsibleSection(QFrame):
             self._subtitle = subtitle
         self.sync_header()
 
+    def set_version(self, version: str):
+        self._version = version or ""
+        self.sync_header()
+
     def set_status_text(self, text: str):
         self.status_badge.setText(text or "")
         self.status_badge.setVisible(bool((text or "").strip()))
 
     def toggle(self):
         self.set_expanded(not self._expanded, animated=True)
+
+    def _header_mouse_press(self, event):
+        try:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.toggle()
+                event.accept()
+                return
+        except Exception:
+            pass
+        try:
+            super().mousePressEvent(event)
+        except Exception:
+            pass
 
     def set_expanded(self, expanded: bool, animated: bool = False):
         if self._expanded == expanded and self.body.isVisible() == expanded:
@@ -5436,10 +5697,11 @@ class CollapsibleSection(QFrame):
     def sync_header(self):
         arrow = "▾" if self._expanded else "▸"
         sub = (self._subtitle or "").strip()
-        if sub:
-            self.header.setText(f"{arrow}  {self._title}\n{sub}")
-        else:
-            self.header.setText(f"{arrow}  {self._title}")
+        self.header.setText(f"{arrow}  {self._title}")
+        self.subtitle_label.setText(sub)
+        self.subtitle_label.setVisible(bool(sub))
+        self.version_label.setText(self._version)
+        self.version_label.setVisible(bool(self._version.strip()))
 
 class TitleBar(QFrame):
     def __init__(self, window):
@@ -6464,6 +6726,13 @@ QPushButton#CollapsibleHeader:hover {{
 QPushButton#CollapsibleHeader:pressed {{
     background: {t['brand_glow']};
 }}
+QLabel#CollapsibleSubtitle {{
+    background: transparent;
+    border: none;
+    color: {t['muted']};
+    font-size: 11px;
+    padding: 0px 18px 12px 42px;
+}}
 QFrame#LeftPlain {{
     background: transparent;
     border: none;
@@ -6498,6 +6767,15 @@ QLabel#BrandVersion {{
     letter-spacing: 2px;
     padding: 0px;
     margin: 0px;
+}}
+QLabel#PluginVersion {{
+    background: transparent;
+    border: none;
+    color: {t['muted']};
+    font-family: "Consolas", "Segoe UI Semibold", "Microsoft YaHei UI";
+    font-size: 12px;
+    font-weight: 700;
+    padding: 16px 2px 0px 2px;
 }}
 QLabel#BrandLogo {{
     background: transparent;
@@ -6587,6 +6865,27 @@ QLineEdit#HudParamInput {{
     font-size: 13px;
     font-weight: 700;
     qproperty-alignment: AlignCenter;
+}}
+QSlider::groove:horizontal {{
+    height: 6px;
+    background: {t['chip']};
+    border: 1px solid {t['line']};
+    border-radius: 3px;
+}}
+QSlider::sub-page:horizontal {{
+    background: {t['accent']};
+    border-radius: 3px;
+}}
+QSlider::handle:horizontal {{
+    width: 16px;
+    height: 16px;
+    margin: -6px 0px;
+    background: {t['text']};
+    border: 2px solid {t['accent']};
+    border-radius: 8px;
+}}
+QSlider::handle:horizontal:hover {{
+    background: {t['accent2']};
 }}
 QPushButton {{
     background: {button_bg};
@@ -6870,6 +7169,7 @@ QCheckBox::indicator:disabled {{
         self.plugins_page_l.addWidget(self.plugins_scroll, 1)
 
         self.plugin_card = CollapsibleSection(self.t("plugin_hud_title"), self.t("plugin_hud_subtitle"), expanded=True)
+        self.plugin_card.set_version("1A01")
         plugin_l = self.plugin_card.body_l
         self.plugin_title = QLabel(self.t("plugin_hud_title"))
         self.plugin_title.setObjectName("SectionTitle")
@@ -7033,6 +7333,7 @@ QCheckBox::indicator:disabled {{
         plugin_l.addLayout(plugin_btns)
 
         self.penalty_card = CollapsibleSection(self.t("plugin_penalty_title"), self.t("plugin_penalty_subtitle"), expanded=False)
+        self.penalty_card.set_version("5Z99")
         penalty_l = self.penalty_card.body_l
         self.penalty_feature_card = QFrame(objectName="PathCard")
         pf_l = QVBoxLayout(self.penalty_feature_card)
@@ -7133,8 +7434,121 @@ QCheckBox::indicator:disabled {{
         penalty_btns.addStretch(1)
         penalty_l.addLayout(penalty_btns)
 
+        self.crosshair_card = CollapsibleSection(self.t("plugin_crosshair_title"), self.t("plugin_crosshair_subtitle"), expanded=False)
+        self.crosshair_card.set_version("2C24")
+        crosshair_l = self.crosshair_card.body_l
+        self.crosshair_feature_card = QFrame(objectName="PathCard")
+        ch_l = QVBoxLayout(self.crosshair_feature_card)
+        ch_l.setContentsMargins(14, 12, 14, 12)
+        ch_l.setSpacing(8)
+        self.crosshair_desc = QLabel(self.t("crosshair_desc"))
+        self.crosshair_desc.setObjectName("Muted")
+        self.crosshair_desc.setWordWrap(True)
+        ch_l.addWidget(self.crosshair_desc)
+        self.crosshair_enable_check = QCheckBox(self.t("hud_enable_crosshair"))
+        self.crosshair_enable_check.toggled.connect(lambda checked: self.quick_set_hud_enabled("crosshair", checked))
+        ch_l.addWidget(self.crosshair_enable_check)
+
+        ch_grid = QGridLayout()
+        ch_grid.setContentsMargins(0, 4, 0, 0)
+        ch_grid.setHorizontalSpacing(12)
+        ch_grid.setVerticalSpacing(10)
+        ch_grid.setColumnStretch(0, 1)
+        ch_grid.setColumnStretch(1, 1)
+        ch_l.addLayout(ch_grid)
+
+        def crosshair_field(label_text, widget):
+            box = QWidget()
+            box_l = QVBoxLayout(box)
+            box_l.setContentsMargins(0, 0, 0, 0)
+            box_l.setSpacing(4)
+            label = QLabel(label_text)
+            label.setObjectName("TinyText")
+            box_l.addWidget(label)
+            box_l.addWidget(widget)
+            return label, box
+
+        def full_width_input(text, width=None):
+            edit = QLineEdit(text)
+            edit.setObjectName("HudParamInput")
+            edit.setFixedHeight(30)
+            edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            if width:
+                edit.setFixedWidth(int(width))
+                edit.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            return edit
+
+        def full_width_combo(width=None):
+            combo = QComboBox()
+            combo.setObjectName("HudParamInput")
+            combo.setMinimumHeight(30)
+            if width:
+                combo.setFixedWidth(int(width))
+                combo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            return combo
+
+        self.crosshair_style_combo = full_width_combo(156)
+        for key in CROSSHAIR_STYLES:
+            self.crosshair_style_combo.addItem(self.t("crosshair_style_" + key), key)
+        self.crosshair_style_combo.currentIndexChanged.connect(self.sync_crosshair_style_controls)
+        self.crosshair_style_label, style_box = crosshair_field(self.t("crosshair_style"), self.crosshair_style_combo)
+        ch_grid.addWidget(style_box, 0, 0)
+
+        color_box = QWidget()
+        color_l = QHBoxLayout(color_box)
+        color_l.setContentsMargins(0, 0, 0, 0)
+        color_l.setSpacing(8)
+        self.crosshair_color_edit = full_width_input("#55E7FF", 104)
+        self.crosshair_color_btn = QPushButton(self.t("crosshair_choose_color"))
+        self.crosshair_color_btn.setMinimumHeight(30)
+        self.crosshair_color_btn.clicked.connect(self.choose_crosshair_color)
+        color_l.addWidget(self.crosshair_color_edit, 1)
+        color_l.addWidget(self.crosshair_color_btn)
+        self.crosshair_color_label, color_field = crosshair_field(self.t("crosshair_color"), color_box)
+        ch_grid.addWidget(color_field, 0, 1)
+
+        self.crosshair_size_edit = full_width_input("32", 76)
+        self.crosshair_size_label, size_box = crosshair_field(self.t("crosshair_size"), self.crosshair_size_edit)
+        ch_grid.addWidget(size_box, 1, 0)
+
+        self.crosshair_thickness_edit = full_width_input("2.2", 76)
+        self.crosshair_thickness_label, thickness_box = crosshair_field(self.t("crosshair_thickness"), self.crosshair_thickness_edit)
+        ch_grid.addWidget(thickness_box, 1, 1)
+
+        opacity_box = QWidget()
+        opacity_l = QHBoxLayout(opacity_box)
+        opacity_l.setContentsMargins(0, 0, 0, 0)
+        opacity_l.setSpacing(8)
+        self.crosshair_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.crosshair_opacity_slider.setRange(10, 100)
+        self.crosshair_opacity_slider.setValue(85)
+        self.crosshair_opacity_slider.setMinimumWidth(150)
+        self.crosshair_opacity_edit = full_width_input("0.85", 68)
+        self.crosshair_opacity_slider.valueChanged.connect(lambda value: self.crosshair_opacity_edit.setText(f"{value / 100:.2f}"))
+        self.crosshair_opacity_edit.editingFinished.connect(lambda: self.crosshair_opacity_slider.setValue(int(round(self._num(self.crosshair_opacity_edit, 0.85, float, 0.1, 1.0) * 100))))
+        opacity_l.addWidget(self.crosshair_opacity_slider, 1)
+        opacity_l.addWidget(self.crosshair_opacity_edit, 0)
+        self.crosshair_opacity_label, opacity_field = crosshair_field(self.t("crosshair_opacity"), opacity_box)
+        ch_grid.addWidget(opacity_field, 2, 0, 1, 2)
+
+        self.crosshair_draggable_check = QCheckBox(self.t("crosshair_draggable"))
+        self.crosshair_draggable_check.toggled.connect(self.quick_set_crosshair_draggable)
+        ch_l.addWidget(self.crosshair_draggable_check)
+
+        crosshair_btns = QHBoxLayout()
+        self.save_crosshair_settings_btn = self.button(self.t("crosshair_save_settings"), self.save_crosshair_settings, accent=True)
+        self.reset_crosshair_position_btn = self.button(self.t("crosshair_reset_position"), self.reset_crosshair_position)
+        crosshair_btns.addWidget(self.save_crosshair_settings_btn)
+        crosshair_btns.addWidget(self.reset_crosshair_position_btn)
+        crosshair_btns.addStretch(1)
+        ch_l.addLayout(crosshair_btns)
+        crosshair_l.addWidget(self.crosshair_feature_card)
+
+        self.load_hud_settings_to_ui()
+
         self.plugins_scroll_l.addWidget(self.plugin_card)
         self.plugins_scroll_l.addWidget(self.penalty_card)
+        self.plugins_scroll_l.addWidget(self.crosshair_card)
         self.plugins_scroll_l.addStretch(1)
 
         self.mods_page = QWidget()
@@ -7385,6 +7799,8 @@ QCheckBox::indicator:disabled {{
                 self.plugin_card.set_title(self.t("plugin_hud_title"), self.t("plugin_hud_subtitle"))
             if hasattr(self, "penalty_card") and hasattr(self.penalty_card, "set_title"):
                 self.penalty_card.set_title(self.t("plugin_penalty_title"), self.t("plugin_penalty_subtitle"))
+            if hasattr(self, "crosshair_card") and hasattr(self.crosshair_card, "set_title"):
+                self.crosshair_card.set_title(self.t("plugin_crosshair_title"), self.t("plugin_crosshair_subtitle"))
             self.speed_title.setText(self.t("speedometer"))
             self.speed_desc.setText(self.t("speedometer_desc"))
             if hasattr(self, "speed_enable_check"):
@@ -7443,6 +7859,21 @@ QCheckBox::indicator:disabled {{
                 self.install_penalty_plugin_btn.setText(self.t("install_penalty_plugin"))
                 if hasattr(self, "delete_penalty_plugin_btn"):
                     self.delete_penalty_plugin_btn.setText(self.t("delete_penalty_plugin"))
+            if hasattr(self, "crosshair_enable_check"):
+                self.crosshair_desc.setText(self.t("crosshair_desc"))
+                self.crosshair_enable_check.setText(self.t("hud_enable_crosshair"))
+                self.crosshair_style_label.setText(self.t("crosshair_style"))
+                self.crosshair_color_label.setText(self.t("crosshair_color"))
+                self.crosshair_color_btn.setText(self.t("crosshair_choose_color"))
+                self.crosshair_size_label.setText(self.t("crosshair_size"))
+                self.crosshair_thickness_label.setText(self.t("crosshair_thickness"))
+                self.crosshair_opacity_label.setText(self.t("crosshair_opacity"))
+                self.crosshair_draggable_check.setText(self.t("crosshair_draggable"))
+                for i, key in enumerate(CROSSHAIR_STYLES):
+                    self.crosshair_style_combo.setItemText(i, self.t("crosshair_style_" + key))
+                self.sync_crosshair_style_controls()
+                self.save_crosshair_settings_btn.setText(self.t("crosshair_save_settings"))
+                self.reset_crosshair_position_btn.setText(self.t("crosshair_reset_position"))
             self.update_hud_plugin_status()
             if hasattr(self, "update_penalty_plugin_status"):
                 self.update_penalty_plugin_status()
@@ -8328,6 +8759,7 @@ QFrame#ThemedDialogFrame QTextEdit {{
             "speed": {"enabled": False, "x": 80, "y": 90, "scale": 1.0, "opacity": 0.92, "max_speed": 420},
             "enemy": {"enabled": False, "x": 80, "y": 320, "scale": 1.0, "opacity": 0.92, "max_enemies": 6, "max_distance": 1800},
             "penalty": {"enabled": False, "x": 500, "y": 90, "scale": 1.0, "opacity": 0.92},
+            "crosshair": {"enabled": False, "x": -1, "y": -1, "size": 32, "thickness": 2.2, "opacity": 0.85, "color": "#55E7FF", "style": "plus", "draggable": False},
             "memory": {"enabled": False, "warned": False},
         }
 
@@ -8341,9 +8773,16 @@ QFrame#ThemedDialogFrame QTextEdit {{
                     cfg["language"] = loaded.get("language")
                 if isinstance(loaded.get("hud_style"), str):
                     cfg["hud_style"] = loaded.get("hud_style")
-                for section in ("speed", "enemy", "penalty", "memory"):
+                for section in ("speed", "enemy", "penalty", "crosshair", "memory"):
                     if isinstance(loaded.get(section), dict):
                         cfg.setdefault(section, {}).update(loaded[section])
+                crosshair = cfg.setdefault("crosshair", {})
+                if str(crosshair.get("style", "plus")) not in CROSSHAIR_STYLES:
+                    crosshair["style"] = "plus"
+                crosshair.setdefault("color", "#55E7FF")
+                crosshair.setdefault("thickness", 2.2)
+                crosshair.pop("skin", None)
+                crosshair.pop("mode", None)
         except Exception:
             pass
         return cfg
@@ -8356,7 +8795,7 @@ QFrame#ThemedDialogFrame QTextEdit {{
 
     def any_hud_enabled(self, cfg: Optional[dict] = None) -> bool:
         cfg = cfg or self.read_hud_config()
-        return any(bool(cfg.get(section, {}).get("enabled", False)) for section in ("speed", "enemy", "penalty"))
+        return any(bool(cfg.get(section, {}).get("enabled", False)) for section in ("speed", "enemy", "penalty", "crosshair"))
 
     def ensure_hud_process_running(self, show_errors: bool = False):
         proc = getattr(self, "hud_process", None)
@@ -8374,6 +8813,7 @@ QFrame#ThemedDialogFrame QTextEdit {{
                 ("speed", "speed_enable_check"),
                 ("enemy", "enemy_enable_check"),
                 ("penalty", "penalty_enable_check"),
+                ("crosshair", "crosshair_enable_check"),
             )
             for section, attr in pairs:
                 if hasattr(self, attr):
@@ -8486,6 +8926,7 @@ QFrame#ThemedDialogFrame QTextEdit {{
         cfg = self.read_hud_config()
         speed = cfg["speed"]
         enemy = cfg["enemy"]
+        crosshair = cfg.get("crosshair", {})
         self._loading_hud_ui = True
         try:
             if hasattr(self, "speed_enable_check"):
@@ -8509,12 +8950,43 @@ QFrame#ThemedDialogFrame QTextEdit {{
             if hasattr(self, "penalty_scale_edit"):
                 self.penalty_scale_edit.setText(str(penalty.get("scale", 1.0)))
                 self.penalty_opacity_edit.setText(str(penalty.get("opacity", 0.92)))
+            if hasattr(self, "crosshair_enable_check"):
+                self.crosshair_enable_check.setChecked(bool(crosshair.get("enabled", False)))
+                self.crosshair_size_edit.setText(str(crosshair.get("size", 32)))
+                self.crosshair_thickness_edit.setText(str(crosshair.get("thickness", 2.2)))
+                opacity_value = self._num_value(crosshair.get("opacity", 0.85), 0.85, float, 0.1, 1.0)
+                self.crosshair_opacity_edit.setText(f"{opacity_value:.2f}")
+                if hasattr(self, "crosshair_opacity_slider"):
+                    self.crosshair_opacity_slider.blockSignals(True)
+                    self.crosshair_opacity_slider.setValue(int(round(opacity_value * 100)))
+                    self.crosshair_opacity_slider.blockSignals(False)
+                self.set_crosshair_color_ui(str(crosshair.get("color", "#55E7FF")))
+                self.crosshair_draggable_check.setChecked(bool(crosshair.get("draggable", False)))
+                style_value = str(crosshair.get("style", "plus"))
+                if style_value not in CROSSHAIR_STYLES:
+                    style_value = "plus"
+                for i in range(self.crosshair_style_combo.count()):
+                    if self.crosshair_style_combo.itemData(i) == style_value:
+                        self.crosshair_style_combo.setCurrentIndex(i)
+                        break
+                self.sync_crosshair_style_controls()
         finally:
             self._loading_hud_ui = False
 
     def _num(self, edit, default, kind=float, min_value=None, max_value=None):
         try:
             value = kind(edit.text().strip())
+        except Exception:
+            value = default
+        if min_value is not None:
+            value = max(min_value, value)
+        if max_value is not None:
+            value = min(max_value, value)
+        return value
+
+    def _num_value(self, raw, default, kind=float, min_value=None, max_value=None):
+        try:
+            value = kind(raw)
         except Exception:
             value = default
         if min_value is not None:
@@ -8551,6 +9023,17 @@ QFrame#ThemedDialogFrame QTextEdit {{
                 "scale": self._num(self.penalty_scale_edit, 1.0, float, 0.3, 4.0) if hasattr(self, "penalty_scale_edit") else current.get("penalty", {}).get("scale", 1.0),
                 "opacity": self._num(self.penalty_opacity_edit, 0.92, float, 0.1, 1.0) if hasattr(self, "penalty_opacity_edit") else current.get("penalty", {}).get("opacity", 0.92),
             },
+            "crosshair": {
+                "x": current.get("crosshair", {}).get("x", -1),
+                "y": current.get("crosshair", {}).get("y", -1),
+                "enabled": self.crosshair_enable_check.isChecked() if hasattr(self, "crosshair_enable_check") else current.get("crosshair", {}).get("enabled", False),
+                "size": self._num(self.crosshair_size_edit, 32, int, 12, 160) if hasattr(self, "crosshair_size_edit") else current.get("crosshair", {}).get("size", 32),
+                "thickness": self._num(self.crosshair_thickness_edit, 2.2, float, 0.6, 12.0) if hasattr(self, "crosshair_thickness_edit") else current.get("crosshair", {}).get("thickness", 2.2),
+                "opacity": self._num(self.crosshair_opacity_edit, 0.85, float, 0.1, 1.0) if hasattr(self, "crosshair_opacity_edit") else current.get("crosshair", {}).get("opacity", 0.85),
+                "color": self.crosshair_color_from_ui() if hasattr(self, "crosshair_color_edit") else current.get("crosshair", {}).get("color", "#55E7FF"),
+                "style": self.current_crosshair_style() if hasattr(self, "crosshair_style_combo") else current.get("crosshair", {}).get("style", "plus"),
+                "draggable": self.crosshair_draggable_check.isChecked() if hasattr(self, "crosshair_draggable_check") else current.get("crosshair", {}).get("draggable", False),
+            },
             "memory": current.get("memory", {"enabled": False, "warned": False}),
         }
         self.write_hud_config(cfg)
@@ -8574,6 +9057,163 @@ QFrame#ThemedDialogFrame QTextEdit {{
             pass
         self.load_hud_settings_to_ui()
         QMessageBox.information(self, APP_NAME, self.t("hud_settings_reset"))
+
+    def crosshair_color_from_ui(self) -> str:
+        text = self.crosshair_color_edit.text().strip() if hasattr(self, "crosshair_color_edit") else "#55E7FF"
+        color = QColor(text)
+        if not color.isValid():
+            color = QColor("#55E7FF")
+        return color.name().upper()
+
+    def set_crosshair_color_ui(self, color_text: str):
+        color = QColor(str(color_text or "").strip())
+        if not color.isValid():
+            color = QColor("#55E7FF")
+        value = color.name().upper()
+        if hasattr(self, "crosshair_color_edit"):
+            self.crosshair_color_edit.setText(value)
+        if hasattr(self, "crosshair_color_btn"):
+            text_color = "#10131C" if (color.red() * 0.299 + color.green() * 0.587 + color.blue() * 0.114) > 170 else "#FFFFFF"
+            self.crosshair_color_btn.setStyleSheet(f"background: {value}; color: {text_color};")
+
+    def current_crosshair_style(self) -> str:
+        style = self.crosshair_style_combo.currentData() if hasattr(self, "crosshair_style_combo") else "plus"
+        style = str(style or "plus")
+        return style if style in CROSSHAIR_STYLES else "plus"
+
+    def sync_crosshair_style_controls(self, *args):
+        dynamic = self.current_crosshair_style() in CROSSHAIR_DYNAMIC_STYLES
+        for widget_name in ("crosshair_color_label", "crosshair_color_edit", "crosshair_color_btn"):
+            widget = getattr(self, widget_name, None)
+            if widget is not None:
+                widget.setEnabled(not dynamic)
+
+    def choose_crosshair_color(self):
+        if self.current_crosshair_style() in CROSSHAIR_DYNAMIC_STYLES:
+            return
+        dlg, root = self.create_themed_dialog(self.t("crosshair_color"), min_width=680, size=(700, 560))
+        color_picker = QColorDialog(QColor(self.crosshair_color_from_ui()), dlg)
+        color_picker.setObjectName("ThemedColorPicker")
+        try:
+            color_picker.setWindowFlags(Qt.WindowType.Widget)
+        except Exception:
+            pass
+        try:
+            color_picker.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog, True)
+            color_picker.setOption(QColorDialog.ColorDialogOption.NoButtons, True)
+        except Exception:
+            pass
+        t = THEMES.get(getattr(self, "theme_key", "normal"), THEMES["normal"])
+        input_bg = f"qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {t['panel2']}, stop:1 {t['chip']})"
+        color_picker.setStyleSheet(f"""
+QColorDialog#ThemedColorPicker {{
+    background: transparent;
+    color: {t['text']};
+    border: none;
+}}
+QColorDialog#ThemedColorPicker QLabel {{
+    color: {t['text']};
+    background: transparent;
+}}
+QColorDialog#ThemedColorPicker QLineEdit,
+QColorDialog#ThemedColorPicker QSpinBox {{
+    background: {input_bg};
+    color: {t['text']};
+    border: 1px solid {t['line']};
+    border-radius: 8px;
+    padding: 4px 7px;
+    min-width: 54px;
+}}
+QColorDialog#ThemedColorPicker QSpinBox::up-button,
+QColorDialog#ThemedColorPicker QSpinBox::down-button {{
+    width: 0px;
+    height: 0px;
+    border: none;
+    background: transparent;
+}}
+QColorDialog#ThemedColorPicker QPushButton {{
+    min-height: 28px;
+}}
+""")
+        try:
+            color_picker.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        except Exception:
+            pass
+        root.addWidget(color_picker, 1)
+        try:
+            for spin in color_picker.findChildren(QAbstractSpinBox):
+                spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+                spin.setMinimumWidth(58)
+                spin.setFixedHeight(28)
+        except Exception:
+            pass
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        ok_text = DanyriaDialog.BUTTON_TEXT.get(self.current_language(), DanyriaDialog.BUTTON_TEXT["en"]).get("ok", "OK")
+        ok_btn = self.button(ok_text, dlg.accept, accent=True)
+        cancel_btn = self.button(self.t("cancel"), dlg.reject)
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        root.addLayout(btn_row)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        color = color_picker.currentColor()
+        if not color.isValid():
+            return
+        self.set_crosshair_color_ui(color.name().upper())
+        self.save_crosshair_settings(show_message=False)
+
+    def quick_set_crosshair_draggable(self, checked: bool):
+        if getattr(self, "_loading_hud_ui", False):
+            return
+        try:
+            cfg = self.read_hud_config()
+            cfg.setdefault("crosshair", {})["draggable"] = bool(checked)
+            self.write_hud_config(cfg)
+            if self.any_hud_enabled(cfg):
+                self.ensure_hud_process_running(show_errors=False)
+            else:
+                self.stop_hud_process()
+        except Exception:
+            pass
+
+    def save_crosshair_settings(self, show_message: bool = True):
+        current = self.read_hud_config()
+        crosshair = current.setdefault("crosshair", self.default_hud_config().get("crosshair", {}).copy())
+        crosshair["enabled"] = self.crosshair_enable_check.isChecked() if hasattr(self, "crosshair_enable_check") else bool(crosshair.get("enabled", False))
+        crosshair["size"] = self._num(self.crosshair_size_edit, 32, int, 12, 160) if hasattr(self, "crosshair_size_edit") else int(crosshair.get("size", 32))
+        crosshair["thickness"] = self._num(self.crosshair_thickness_edit, 2.2, float, 0.6, 12.0) if hasattr(self, "crosshair_thickness_edit") else float(crosshair.get("thickness", 2.2))
+        crosshair["opacity"] = self._num(self.crosshair_opacity_edit, 0.85, float, 0.1, 1.0) if hasattr(self, "crosshair_opacity_edit") else float(crosshair.get("opacity", 0.85))
+        crosshair["color"] = self.crosshair_color_from_ui() if hasattr(self, "crosshair_color_edit") else str(crosshair.get("color", "#55E7FF"))
+        style = self.current_crosshair_style() if hasattr(self, "crosshair_style_combo") else crosshair.get("style", "plus")
+        crosshair["style"] = style if style in CROSSHAIR_STYLES else "plus"
+        crosshair["draggable"] = self.crosshair_draggable_check.isChecked() if hasattr(self, "crosshair_draggable_check") else bool(crosshair.get("draggable", False))
+        crosshair["x"] = crosshair.get("x", -1)
+        crosshair["y"] = crosshair.get("y", -1)
+        crosshair.pop("skin", None)
+        crosshair.pop("mode", None)
+        self.write_hud_config(current)
+        self.load_hud_settings_to_ui()
+        if self.any_hud_enabled(current):
+            self.ensure_hud_process_running(show_errors=False)
+        else:
+            self.stop_hud_process()
+        if show_message:
+            QMessageBox.information(self, APP_NAME, self.t("hud_settings_saved"))
+
+    def reset_crosshair_position(self):
+        current = self.read_hud_config()
+        crosshair = current.setdefault("crosshair", self.default_hud_config().get("crosshair", {}).copy())
+        crosshair["x"] = -1
+        crosshair["y"] = -1
+        self.write_hud_config(current)
+        if self.any_hud_enabled(current):
+            self.ensure_hud_process_running(show_errors=False)
+        else:
+            self.stop_hud_process()
+        QMessageBox.information(self, APP_NAME, self.t("crosshair_position_reset"))
 
 
     def save_penalty_score_params(self):

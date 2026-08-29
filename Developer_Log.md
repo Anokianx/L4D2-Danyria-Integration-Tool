@@ -316,3 +316,31 @@ VScript runs server-side only, so a joining client on a 3rd-party/dedicated serv
 - **Crash guard + auto-reconnect** (main app, stdlib only): joining from the Servers panel records `ip:port` (`last_server` in `danyria_app_config.json`). When "Auto-reconnect on crash" is checked, `left4dead2.exe` is polled via `tasklist` every 5s. Rule chain: enabled + joined this session + game ran ≥15s (avoids boot-loop) → **~10s grace** after it exits (uncheck to cancel) → `steam://connect/<ip:port>` back to the last server; **60s cooldown + max 3 relaunches**. No polling at all when disabled. See `_crash_tick` / `_is_game_running` / `_toggle_crash_guard` / `_init_danyria_extras`.
 - **Career stats** (main-app SQLite + self-drawn QPainter chart): new 5th "Career" panel. The HUD's `tick()` writes a stats snapshot to `danyria_career_live.json` every 2s when data is fresh (`_maybe_write_career`, atomic write); the main app reads it every 3s and detects round boundaries by **cumulative-counter resets / stale data**, committing finished rounds to `danyria_career.db` (table `rounds`). Empty rounds (no kills, score unchanged) aren't logged. Page: 5 summary cards (rounds / best / avg / special+tank / total damage) + a score-trend line (`CareerChart`) + a recent-40-rounds table (time/score/grade/kills C·S·W·T/damage/deaths/server) + refresh / clear. Each round also stores the joined server address (shared `_last_server_addr`).
 - Strings live in `CAREER_TEXT` (key→{lang}, all 9 languages); `career_tr` resolves and `_retranslate_career` refreshes on language switch. Stdlib-only (`sqlite3` / `subprocess` / `os`), no new packaging deps.
+
+---
+
+## 10. 2026-08-29 AemeCross 准心插件更新 / AemeCross crosshair plugin update
+
+### 中文
+
+- **插件页新增 AemeCross 准心插件**：在插件板块加入独立准心卡片，支持启用/关闭、样式选择、大小、透明度、粗细、自定义颜色、自由拖拽开关和重置位置；自由拖拽为独立即时开关，默认关闭，不依赖“保存设置”才生效。
+- **静态样式收敛**：保留十字、圆点、圆环、X 型、菱形五种静态准心；移除原先多余的动态/静态切换和冗余动态样式。静态样式统一支持自定义颜色、粗细、大小、透明度，并接入游戏内扩散反馈。
+- **爱弥斯动态准心**：新增 Aemeath / 爱弥斯动态样式，配色固定为粉、蓝、白系；动态样式禁用颜色选择。绘制采用透明 HUD 背景，无黑幕；动画改为首尾连续循环，圆环、弧线和菱形渐变保持无明显复位。
+- **扩散与开火反馈**：HUD 端新增 `crosshair_spread` 状态，移动和开火共用同一扩散值；内存桥数据增加 `firing` 字段，读取 `m_nButtons & IN_ATTACK`，并用 Windows 左键状态作为兜底。静态五种准心和爱弥斯动态准心都会随移动/开火产生伸展收缩。
+- **爱弥斯细节修复**：粉色内环四段弧线改为 90 度对称分布；移除干扰瞄准的旧菱形位置和快速环形轨迹条；十字方向改为四个菱形矛状元素，斜向四个菱形移到圆环外侧并同步渐变；中心点缩小并保持静态。
+- **UI 与主题一致性**：准心样式下拉和数值框宽度收窄，标签与控件同侧排布；颜色选择弹窗改为软件内主题化弹窗，避免系统原生标题栏和黑底看不清的问题，并移除数字框内遮挡内容的上下箭头。
+- **插件版本标注**：插件卡片标题旁加入淡化版本号，采用英国铁路车次格式“数字+字母+数字+数字”；HUD/Danyria 插件为 `1A01`，准心插件为 `2C24`，评分系统测试插件为 `5Z99`。
+- **国际化补全**：新增准心插件相关文本、多样式名称、Aemeath 动态名称、版本标签和控件文案，补齐 `zh` / `zh_CN` / `en` / `ja` / `ko` / `ru` / `de` / `fr` / `es`，并同步到 `assets/i18n.json`。
+- **验证**：已运行 `python -m py_compile Danyria.pyw payload\danyria_hud\DanyriaHUD.pyw`；离屏渲染验证五个静态准心扩散差异、爱弥斯透明背景、满扩散无裁切，以及 `firing=1` 能驱动扩散值上升。
+
+### English
+
+- **AemeCross crosshair plugin card**: added an independent crosshair card to the Plugins page with enable/disable, style, size, opacity, thickness, custom color, free-drag toggle, and reset position. Free drag is an immediate independent switch, disabled by default, and no longer depends on saving settings first.
+- **Static style set**: kept five static styles only: plus, dot, circle, X, and diamond. Removed the old static/dynamic mode selector and redundant dynamic styles. Static styles support custom color, thickness, size, opacity, and in-game spread feedback.
+- **Aemeath dynamic crosshair**: added the Aemeath dynamic style with fixed pink/blue/white colors; dynamic styles disable color selection. It renders on a transparent HUD background with no black veil, and the animation loops seamlessly without visible reset frames.
+- **Spread and firing feedback**: added HUD-side `crosshair_spread`; movement and firing now drive the same spread state. The memory bridge exports `firing` from `m_nButtons & IN_ATTACK`, with the Windows left mouse button as a fallback. All five static styles and Aemeath expand/contract on movement and firing.
+- **Aemeath detail fixes**: made the four pink inner-ring arcs symmetric at 90-degree spacing; removed the old inner diamond positions and the fast orbiting trail that interfered visually; replaced cross-axis lines with four diamond spear elements, moved the diagonal diamonds outside the ring, synchronized their gradient animation, and kept the center dot small and static.
+- **UI and theme consistency**: narrowed the style combo and numeric inputs, moved labels and controls into the same visual side, replaced the native color picker with a themed in-app dialog, and removed spinbox arrow buttons that covered numeric fields.
+- **Plugin version tags**: plugin titles now show muted version labels using the UK railway headcode-like format `digit + letter + digit + digit`: HUD/Danyria `1A01`, crosshair `2C24`, and score-system test plugin `5Z99`.
+- **Localization**: completed the crosshair plugin strings, style names, Aemeath dynamic name, version label, and control text for `zh` / `zh_CN` / `en` / `ja` / `ko` / `ru` / `de` / `fr` / `es`, synchronized to `assets/i18n.json`.
+- **Verification**: ran `python -m py_compile Danyria.pyw payload\danyria_hud\DanyriaHUD.pyw`; offscreen rendering verified spread deltas for all five static styles, Aemeath transparent background, no clipping at full spread, and `firing=1` increasing the spread value.
