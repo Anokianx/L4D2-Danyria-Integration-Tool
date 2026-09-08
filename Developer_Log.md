@@ -344,3 +344,26 @@ VScript runs server-side only, so a joining client on a 3rd-party/dedicated serv
 - **Plugin version tags**: plugin titles now show muted version labels using the UK railway headcode-like format `digit + letter + digit + digit`: HUD/Danyria `1A01`, crosshair `2C24`, and score-system test plugin `5Z99`.
 - **Localization**: completed the crosshair plugin strings, style names, Aemeath dynamic name, version label, and control text for `zh` / `zh_CN` / `en` / `ja` / `ko` / `ru` / `de` / `fr` / `es`, synchronized to `assets/i18n.json`.
 - **Verification**: ran `python -m py_compile Danyria.pyw payload\danyria_hud\DanyriaHUD.pyw`; offscreen rendering verified spread deltas for all five static styles, Aemeath transparent background, no clipping at full spread, and `firing=1` increasing the spread value.
+
+## 11. 动态准心模块化 / Modular dynamic crosshairs
+
+### 中文
+
+- 新增 `Aeme/` 动态准心目录。每个动态准心使用一个独立 Python 文件，通过 `API_VERSION`、`STYLE_ID`、`NAME_KEY`、多语言 `LABELS`、画布参数和 `paint(...)` 接口登记。
+- 爱弥斯已从 `payload/danyria_hud/DanyriaHUD.pyw` 拆分到 `Aeme/Aemeath.py`。HUD 统一传入经过时间、大小、粗细和游戏扩散值，动态样式不再自己管理动画时钟。
+- 主程序和 HUD 共用 `Aeme` 样式发现结果；新增动态准心只需添加模块文件，不需要重复修改主程序样式列表。加载失败会记录错误并回退到静态十字，避免整个 HUD 退出。
+- `Build.bat`、`Danyria.spec` 和 Nuitka 安全构建脚本已加入 `Aeme` 子模块收集，保证源码运行、PyInstaller 和 Nuitka 打包都能找到动态准心。
+
+### English
+
+- Added the `Aeme/` directory for modular dynamic crosshairs. Each style is one Python file registered with `API_VERSION`, `STYLE_ID`, `NAME_KEY`, multilingual `LABELS`, canvas settings, and a `paint(...)` interface.
+- Aemeath was moved from `payload/danyria_hud/DanyriaHUD.pyw` to `Aeme/Aemeath.py`. The HUD supplies elapsed time, size, thickness, and in-game spread, so dynamic styles no longer manage their own animation clock.
+- The main application and HUD share the discovered `Aeme` styles. Adding a dynamic crosshair only requires a new module file; a load or paint failure is recorded and falls back to the static plus crosshair.
+- `Build.bat`, `Danyria.spec`, and the secure Nuitka build script now collect the `Aeme` submodules for source execution, PyInstaller, and Nuitka builds.
+
+## 12. 2026-09-08 守岸人动态准心正式接入 / Shorekeeper integration
+
+- 将确认的第 10 版守岸人绘制模块接入 `Aeme/Shorekeeper.py`，样式标识为 `shorekeeper`。保留蝶翼内部流光、蓝黄发散描边、中心弧线以及沿共同轨迹扩散的流沙和半透明飘带，绘制逻辑与确认版一致。
+- 样式列表新增「守岸人（动态）」，同步主程序内置文案、外部语言包和模块备用名称，共 9 种语言。沿用 HUD 现有鼠标/游戏开火、扩散及平滑退场响应；矩形画布适配屏幕尺寸。
+- 独立 GIF 工具、预览图和历史原型继续保存在项目外，不参与主程序运行和打包。构建脚本现有的 `Aeme` 模块收集自动包含守岸人；修正 `Danyria.spec` 的旧绝对路径，改为以 spec 所在目录定位资源。
+- 验证：12 项离屏测试通过，包括真实 HUD 窗口的射击/松开联动、最大尺寸适配、边界裁切及语言一致性；确认绘制代码与第 10 版一致，PyInstaller 可收集新模块，源码编译检查通过。本次未重新生成 EXE。

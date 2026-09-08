@@ -26,6 +26,7 @@ import threading
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional
+from Aeme import DYNAMIC_STYLES, STYLES, style_label
 
 # ---------------------------------------------------------------------------
 # HUD 运行时依赖预加载。HUD 作为数据文件通过 runpy 嵌入启动，打包器不会自动分析它的导入。
@@ -67,7 +68,7 @@ NativeQMessageBox = QMessageBox
 # Application constants and file-format constants.
 # ---------------------------------------------------------------------------
 APP_NAME = "Danyria"
-APP_VERSION = "1.2.3"
+APP_VERSION = "1.2.4"
 CONFIG_NAME = "danyria_config.json"
 VPK_MAGIC = 0x55AA1234
 DIR_INDEX = 0x7FFF
@@ -3701,7 +3702,31 @@ def _merge_i18n_pack(base: dict, extra: dict) -> dict:
 
 
 def _external_i18n_path() -> Path:
-    return Path(__file__).resolve().parent / "assets" / "i18n.json"
+    roots = []
+    try:
+        mei_root = getattr(sys, "_MEIPASS", None)
+        if mei_root:
+            roots.append(Path(mei_root).resolve())
+    except Exception:
+        pass
+    try:
+        if getattr(sys, "frozen", False):
+            roots.append(Path(sys.executable).resolve().parent)
+    except Exception:
+        pass
+    try:
+        roots.append(Path(__file__).resolve().parent)
+    except Exception:
+        pass
+    for root in roots:
+        p = root / "assets" / "i18n.json"
+        try:
+            if p.exists():
+                return p
+        except Exception:
+            continue
+    fallback_root = roots[0] if roots else Path(".")
+    return fallback_root / "assets" / "i18n.json"
 
 
 def _load_external_i18n(base: dict) -> dict:
@@ -3932,6 +3957,184 @@ I18N_WORKSHOP = {
     }
 }
 I18N = _merge_i18n_pack(I18N, I18N_WORKSHOP)
+
+
+# 运行环境检查文本兜底。外部语言包丢失或旧版时不能把 key 直接显示给用户。
+# Runtime-environment fallback strings. Prevent raw keys when an older/missing external pack is loaded.
+I18N_RUNTIME_ENV = {
+    "zh": {
+        "runtime_env_title": "运行环境检测",
+        "runtime_env_desc": "启动时会检查外置 HUD 需要的 Python 运行环境。缺少 PySide6 或 Pillow 时会自动安装；这里也可以手动检测和修复。",
+        "runtime_check_fix": "检测 / 修复运行环境",
+        "runtime_checking": "正在检测并修复运行环境，请稍候...",
+        "runtime_all_ok": "运行环境已就绪。",
+        "runtime_fix_done": "运行环境已修复。",
+        "runtime_fix_failed": "运行环境仍不完整。",
+        "runtime_python_missing_body": "没有找到可用的 Python，无法自动安装 HUD 依赖。请先安装 Python 3，并勾选 Add Python to PATH。",
+        "runtime_status_python_ok": "Python：已找到 {path}",
+        "runtime_status_python_missing": "Python：未找到",
+        "runtime_status_pip_ok": "pip：可用",
+        "runtime_status_pip_missing": "pip：不可用，将尝试自动修复",
+        "runtime_status_module_ok": "{name}：已安装",
+        "runtime_status_module_missing": "{name}：未安装，将尝试自动安装",
+        "runtime_status_steam_bridge_ok": "Steam 联动组件：已自动准备",
+        "runtime_status_steam_bridge_missing": "Steam 联动组件：等待 Steam API",
+        "runtime_status_steam_bridge_scaffold": "Steam 联动组件：已自动准备",
+    },
+    "zh_CN": {
+        "runtime_env_title": "运行环境检测",
+        "runtime_env_desc": "启动时会检查外置 HUD 需要的 Python 运行环境。缺少 PySide6 或 Pillow 时会自动安装；这里也可以手动检测和修复。",
+        "runtime_check_fix": "检测 / 修复运行环境",
+        "runtime_checking": "正在检测并修复运行环境，请稍候...",
+        "runtime_all_ok": "运行环境已就绪。",
+        "runtime_fix_done": "运行环境已修复。",
+        "runtime_fix_failed": "运行环境仍不完整。",
+        "runtime_python_missing_body": "没有找到可用的 Python，无法自动安装 HUD 依赖。请先安装 Python 3，并勾选 Add Python to PATH。",
+        "runtime_status_python_ok": "Python：已找到 {path}",
+        "runtime_status_python_missing": "Python：未找到",
+        "runtime_status_pip_ok": "pip：可用",
+        "runtime_status_pip_missing": "pip：不可用，将尝试自动修复",
+        "runtime_status_module_ok": "{name}：已安装",
+        "runtime_status_module_missing": "{name}：未安装，将尝试自动安装",
+        "runtime_status_steam_bridge_ok": "Steam 联动组件：已自动准备",
+        "runtime_status_steam_bridge_missing": "Steam 联动组件：等待 Steam API",
+        "runtime_status_steam_bridge_scaffold": "Steam 联动组件：已自动准备",
+    },
+    "en": {
+        "runtime_env_title": "Runtime Environment",
+        "runtime_env_desc": "Danyria checks the Python runtime needed by the external HUD at startup. Missing packages such as PySide6 or Pillow are installed automatically; you can also check and repair it here.",
+        "runtime_check_fix": "Check / Repair Runtime",
+        "runtime_checking": "Checking and repairing the runtime environment, please wait...",
+        "runtime_all_ok": "Runtime environment is ready.",
+        "runtime_fix_done": "Runtime environment repaired.",
+        "runtime_fix_failed": "Runtime environment is still incomplete.",
+        "runtime_python_missing_body": "No usable Python was found, so HUD dependencies cannot be installed automatically. Install Python 3 first and enable Add Python to PATH.",
+        "runtime_status_python_ok": "Python: found {path}",
+        "runtime_status_python_missing": "Python: not found",
+        "runtime_status_pip_ok": "pip: available",
+        "runtime_status_pip_missing": "pip: unavailable; will try to repair automatically",
+        "runtime_status_module_ok": "{name}: installed",
+        "runtime_status_module_missing": "{name}: missing; will try to install automatically",
+        "runtime_status_steam_bridge_ok": "Steam Link component: ready",
+        "runtime_status_steam_bridge_missing": "Steam Link component: waiting for Steam API",
+        "runtime_status_steam_bridge_scaffold": "Steam Link component: ready",
+    },
+    "ja": {
+        "runtime_env_title": "実行環境チェック",
+        "runtime_env_desc": "起動時に外部 HUD に必要な Python 実行環境を確認します。PySide6 または Pillow が不足している場合は自動でインストールします。ここから手動で確認と修復もできます。",
+        "runtime_check_fix": "実行環境を確認 / 修復",
+        "runtime_checking": "実行環境を確認・修復しています。しばらくお待ちください...",
+        "runtime_all_ok": "実行環境は準備済みです。",
+        "runtime_fix_done": "実行環境を修復しました。",
+        "runtime_fix_failed": "実行環境はまだ不完全です。",
+        "runtime_python_missing_body": "使用可能な Python が見つからないため、HUD の依存関係を自動インストールできません。先に Python 3 をインストールし、Add Python to PATH を有効にしてください。",
+        "runtime_status_python_ok": "Python: {path} が見つかりました",
+        "runtime_status_python_missing": "Python: 見つかりません",
+        "runtime_status_pip_ok": "pip: 使用可能",
+        "runtime_status_pip_missing": "pip: 使用できません。自動修復を試みます",
+        "runtime_status_module_ok": "{name}: インストール済み",
+        "runtime_status_module_missing": "{name}: 未インストール。自動インストールを試みます",
+        "runtime_status_steam_bridge_ok": "Steam 連携: 準備完了",
+        "runtime_status_steam_bridge_missing": "Steam 連携: Steam API 待機中",
+        "runtime_status_steam_bridge_scaffold": "Steam 連携: 準備完了",
+    },
+    "ko": {
+        "runtime_env_title": "런타임 환경 검사",
+        "runtime_env_desc": "시작 시 외부 HUD에 필요한 Python 런타임 환경을 확인합니다. PySide6 또는 Pillow가 없으면 자동으로 설치하며, 여기서 수동으로 검사하고 복구할 수도 있습니다.",
+        "runtime_check_fix": "런타임 검사 / 복구",
+        "runtime_checking": "런타임 환경을 검사하고 복구하는 중입니다. 잠시 기다려 주세요...",
+        "runtime_all_ok": "런타임 환경이 준비되었습니다.",
+        "runtime_fix_done": "런타임 환경을 복구했습니다.",
+        "runtime_fix_failed": "런타임 환경이 아직 완전하지 않습니다.",
+        "runtime_python_missing_body": "사용 가능한 Python을 찾지 못해 HUD 의존성을 자동 설치할 수 없습니다. 먼저 Python 3을 설치하고 Add Python to PATH를 활성화하세요.",
+        "runtime_status_python_ok": "Python: {path} 찾음",
+        "runtime_status_python_missing": "Python: 찾을 수 없음",
+        "runtime_status_pip_ok": "pip: 사용 가능",
+        "runtime_status_pip_missing": "pip: 사용할 수 없음. 자동 복구를 시도합니다",
+        "runtime_status_module_ok": "{name}: 설치됨",
+        "runtime_status_module_missing": "{name}: 없음. 자동 설치를 시도합니다",
+        "runtime_status_steam_bridge_ok": "Steam 연동: 준비됨",
+        "runtime_status_steam_bridge_missing": "Steam 연동: Steam API 대기 중",
+        "runtime_status_steam_bridge_scaffold": "Steam 연동: 준비됨",
+    },
+    "ru": {
+        "runtime_env_title": "Проверка среды выполнения",
+        "runtime_env_desc": "При запуске Danyria проверяет среду Python, нужную внешнему HUD. Если PySide6 или Pillow отсутствуют, они будут установлены автоматически; здесь также можно проверить и исправить среду вручную.",
+        "runtime_check_fix": "Проверить / исправить среду",
+        "runtime_checking": "Проверка и исправление среды выполнения, подождите...",
+        "runtime_all_ok": "Среда выполнения готова.",
+        "runtime_fix_done": "Среда выполнения исправлена.",
+        "runtime_fix_failed": "Среда выполнения всё ещё неполная.",
+        "runtime_python_missing_body": "Не найден подходящий Python, поэтому зависимости HUD нельзя установить автоматически. Сначала установите Python 3 и включите Add Python to PATH.",
+        "runtime_status_python_ok": "Python: найден {path}",
+        "runtime_status_python_missing": "Python: не найден",
+        "runtime_status_pip_ok": "pip: доступен",
+        "runtime_status_pip_missing": "pip: недоступен; будет выполнена попытка исправления",
+        "runtime_status_module_ok": "{name}: установлен",
+        "runtime_status_module_missing": "{name}: отсутствует; будет выполнена попытка установки",
+        "runtime_status_steam_bridge_ok": "Связь Steam: готово",
+        "runtime_status_steam_bridge_missing": "Связь Steam: ожидание Steam API",
+        "runtime_status_steam_bridge_scaffold": "Связь Steam: готово",
+    },
+    "de": {
+        "runtime_env_title": "Laufzeitumgebung",
+        "runtime_env_desc": "Danyria prüft beim Start die Python-Laufzeitumgebung für das externe HUD. Fehlende Pakete wie PySide6 oder Pillow werden automatisch installiert; hier kannst du auch manuell prüfen und reparieren.",
+        "runtime_check_fix": "Laufzeit prüfen / reparieren",
+        "runtime_checking": "Laufzeitumgebung wird geprüft und repariert, bitte warten...",
+        "runtime_all_ok": "Laufzeitumgebung ist bereit.",
+        "runtime_fix_done": "Laufzeitumgebung wurde repariert.",
+        "runtime_fix_failed": "Laufzeitumgebung ist noch unvollständig.",
+        "runtime_python_missing_body": "Kein nutzbares Python gefunden; HUD-Abhängigkeiten können nicht automatisch installiert werden. Installiere zuerst Python 3 und aktiviere Add Python to PATH.",
+        "runtime_status_python_ok": "Python: gefunden {path}",
+        "runtime_status_python_missing": "Python: nicht gefunden",
+        "runtime_status_pip_ok": "pip: verfügbar",
+        "runtime_status_pip_missing": "pip: nicht verfügbar; automatische Reparatur wird versucht",
+        "runtime_status_module_ok": "{name}: installiert",
+        "runtime_status_module_missing": "{name}: fehlt; automatische Installation wird versucht",
+        "runtime_status_steam_bridge_ok": "Steam-Verknüpfung: bereit",
+        "runtime_status_steam_bridge_missing": "Steam-Verknüpfung: wartet auf Steam API",
+        "runtime_status_steam_bridge_scaffold": "Steam-Verknüpfung: bereit",
+    },
+    "fr": {
+        "runtime_env_title": "Environnement d'exécution",
+        "runtime_env_desc": "Au démarrage, Danyria vérifie l'environnement Python nécessaire au HUD externe. Si PySide6 ou Pillow manque, l'installation est tentée automatiquement; vous pouvez aussi vérifier et réparer ici.",
+        "runtime_check_fix": "Vérifier / réparer l'environnement",
+        "runtime_checking": "Vérification et réparation de l'environnement, veuillez patienter...",
+        "runtime_all_ok": "L'environnement d'exécution est prêt.",
+        "runtime_fix_done": "L'environnement d'exécution a été réparé.",
+        "runtime_fix_failed": "L'environnement d'exécution est encore incomplet.",
+        "runtime_python_missing_body": "Aucun Python utilisable n'a été trouvé; les dépendances du HUD ne peuvent pas être installées automatiquement. Installez d'abord Python 3 et activez Add Python to PATH.",
+        "runtime_status_python_ok": "Python : trouvé {path}",
+        "runtime_status_python_missing": "Python : introuvable",
+        "runtime_status_pip_ok": "pip : disponible",
+        "runtime_status_pip_missing": "pip : indisponible; tentative de réparation automatique",
+        "runtime_status_module_ok": "{name} : installé",
+        "runtime_status_module_missing": "{name} : manquant; tentative d'installation automatique",
+        "runtime_status_steam_bridge_ok": "Lien Steam : prêt",
+        "runtime_status_steam_bridge_missing": "Lien Steam : attente de Steam API",
+        "runtime_status_steam_bridge_scaffold": "Lien Steam : prêt",
+    },
+    "es": {
+        "runtime_env_title": "Entorno de ejecución",
+        "runtime_env_desc": "Al iniciar, Danyria comprueba el entorno de Python necesario para el HUD externo. Si falta PySide6 o Pillow, se intentará instalar automáticamente; también puedes comprobarlo y repararlo aquí.",
+        "runtime_check_fix": "Comprobar / reparar entorno",
+        "runtime_checking": "Comprobando y reparando el entorno de ejecución, espera...",
+        "runtime_all_ok": "El entorno de ejecución está listo.",
+        "runtime_fix_done": "Entorno de ejecución reparado.",
+        "runtime_fix_failed": "El entorno de ejecución sigue incompleto.",
+        "runtime_python_missing_body": "No se encontró un Python utilizable, así que no se pueden instalar automáticamente las dependencias del HUD. Instala Python 3 primero y activa Add Python to PATH.",
+        "runtime_status_python_ok": "Python: encontrado {path}",
+        "runtime_status_python_missing": "Python: no encontrado",
+        "runtime_status_pip_ok": "pip: disponible",
+        "runtime_status_pip_missing": "pip: no disponible; se intentará reparar automáticamente",
+        "runtime_status_module_ok": "{name}: instalado",
+        "runtime_status_module_missing": "{name}: falta; se intentará instalar automáticamente",
+        "runtime_status_steam_bridge_ok": "Vínculo de Steam: listo",
+        "runtime_status_steam_bridge_missing": "Vínculo de Steam: esperando Steam API",
+        "runtime_status_steam_bridge_scaffold": "Vínculo de Steam: listo",
+    },
+}
+I18N = _merge_i18n_pack(I18N, I18N_RUNTIME_ENV)
 
 
 I18N_LANG_FILL = {
@@ -4172,7 +4375,7 @@ I18N_HUD_STYLE = {
 I18N = _merge_i18n_pack(I18N, I18N_HUD_STYLE)
 
 CROSSHAIR_STATIC_STYLES = ("plus", "dot", "circle", "x", "diamond")
-CROSSHAIR_DYNAMIC_STYLES = ("aimis",)
+CROSSHAIR_DYNAMIC_STYLES = DYNAMIC_STYLES
 CROSSHAIR_STYLES = CROSSHAIR_STATIC_STYLES + CROSSHAIR_DYNAMIC_STYLES
 
 I18N_CROSSHAIR = {
@@ -4189,6 +4392,7 @@ I18N_CROSSHAIR = {
         "crosshair_style_x": "X 型",
         "crosshair_style_diamond": "菱形",
         "crosshair_style_aimis": "爱弥斯（动态）",
+        "crosshair_style_shorekeeper": "守岸人（动态）",
         "crosshair_color": "颜色",
         "crosshair_choose_color": "选择颜色",
         "crosshair_size": "大小",
@@ -4212,6 +4416,7 @@ I18N_CROSSHAIR = {
         "crosshair_style_x": "X 型",
         "crosshair_style_diamond": "菱形",
         "crosshair_style_aimis": "爱弥斯（动态）",
+        "crosshair_style_shorekeeper": "守岸人（动态）",
         "crosshair_color": "颜色",
         "crosshair_choose_color": "选择颜色",
         "crosshair_size": "大小",
@@ -4235,6 +4440,7 @@ I18N_CROSSHAIR = {
         "crosshair_style_x": "X",
         "crosshair_style_diamond": "Diamond",
         "crosshair_style_aimis": "Aemeath (Dynamic)",
+        "crosshair_style_shorekeeper": "Shorekeeper (Dynamic)",
         "crosshair_color": "Color",
         "crosshair_choose_color": "Choose color",
         "crosshair_size": "Size",
@@ -4258,6 +4464,7 @@ I18N_CROSSHAIR = {
         "crosshair_style_x": "X",
         "crosshair_style_diamond": "ダイヤ",
         "crosshair_style_aimis": "エイメス（動的）",
+        "crosshair_style_shorekeeper": "ショアキーパー（動的）",
         "crosshair_color": "色",
         "crosshair_choose_color": "色を選択",
         "crosshair_size": "サイズ",
@@ -4281,6 +4488,7 @@ I18N_CROSSHAIR = {
         "crosshair_style_x": "X",
         "crosshair_style_diamond": "다이아몬드",
         "crosshair_style_aimis": "에이메스(동적)",
+        "crosshair_style_shorekeeper": "파수인(동적)",
         "crosshair_color": "색상",
         "crosshair_choose_color": "색상 선택",
         "crosshair_size": "크기",
@@ -4304,6 +4512,7 @@ I18N_CROSSHAIR = {
         "crosshair_style_x": "X",
         "crosshair_style_diamond": "Ромб",
         "crosshair_style_aimis": "Эймис (динамический)",
+        "crosshair_style_shorekeeper": "Хранительница Берегов (динамический)",
         "crosshair_color": "Цвет",
         "crosshair_choose_color": "Выбрать цвет",
         "crosshair_size": "Размер",
@@ -4327,6 +4536,7 @@ I18N_CROSSHAIR = {
         "crosshair_style_x": "X",
         "crosshair_style_diamond": "Diamant",
         "crosshair_style_aimis": "Aemeath (dynamisch)",
+        "crosshair_style_shorekeeper": "Shorekeeper (dynamisch)",
         "crosshair_color": "Farbe",
         "crosshair_choose_color": "Farbe wählen",
         "crosshair_size": "Größe",
@@ -4350,6 +4560,7 @@ I18N_CROSSHAIR = {
         "crosshair_style_x": "X",
         "crosshair_style_diamond": "Losange",
         "crosshair_style_aimis": "Aemeath (dynamique)",
+        "crosshair_style_shorekeeper": "Shorekeeper (dynamique)",
         "crosshair_color": "Couleur",
         "crosshair_choose_color": "Choisir la couleur",
         "crosshair_size": "Taille",
@@ -4373,6 +4584,7 @@ I18N_CROSSHAIR = {
         "crosshair_style_x": "X",
         "crosshair_style_diamond": "Diamante",
         "crosshair_style_aimis": "Aemeath (dinámica)",
+        "crosshair_style_shorekeeper": "Shorekeeper (dinámica)",
         "crosshair_color": "Color",
         "crosshair_choose_color": "Elegir color",
         "crosshair_size": "Tamaño",
@@ -7435,7 +7647,7 @@ QCheckBox::indicator:disabled {{
         penalty_l.addLayout(penalty_btns)
 
         self.crosshair_card = CollapsibleSection(self.t("plugin_crosshair_title"), self.t("plugin_crosshair_subtitle"), expanded=False)
-        self.crosshair_card.set_version("2C24")
+        self.crosshair_card.set_version("1S17")
         crosshair_l = self.crosshair_card.body_l
         self.crosshair_feature_card = QFrame(objectName="PathCard")
         ch_l = QVBoxLayout(self.crosshair_feature_card)
@@ -7489,7 +7701,7 @@ QCheckBox::indicator:disabled {{
 
         self.crosshair_style_combo = full_width_combo(156)
         for key in CROSSHAIR_STYLES:
-            self.crosshair_style_combo.addItem(self.t("crosshair_style_" + key), key)
+            self.crosshair_style_combo.addItem(style_label(key, self.t, self.current_language), key)
         self.crosshair_style_combo.currentIndexChanged.connect(self.sync_crosshair_style_controls)
         self.crosshair_style_label, style_box = crosshair_field(self.t("crosshair_style"), self.crosshair_style_combo)
         ch_grid.addWidget(style_box, 0, 0)
@@ -7870,7 +8082,7 @@ QCheckBox::indicator:disabled {{
                 self.crosshair_opacity_label.setText(self.t("crosshair_opacity"))
                 self.crosshair_draggable_check.setText(self.t("crosshair_draggable"))
                 for i, key in enumerate(CROSSHAIR_STYLES):
-                    self.crosshair_style_combo.setItemText(i, self.t("crosshair_style_" + key))
+                    self.crosshair_style_combo.setItemText(i, style_label(key, self.t, self.current_language))
                 self.sync_crosshair_style_controls()
                 self.save_crosshair_settings_btn.setText(self.t("crosshair_save_settings"))
                 self.reset_crosshair_position_btn.setText(self.t("crosshair_reset_position"))
@@ -9024,6 +9236,7 @@ QFrame#ThemedDialogFrame QTextEdit {{
                 "opacity": self._num(self.penalty_opacity_edit, 0.92, float, 0.1, 1.0) if hasattr(self, "penalty_opacity_edit") else current.get("penalty", {}).get("opacity", 0.92),
             },
             "crosshair": {
+                **current.get("crosshair", {}),
                 "x": current.get("crosshair", {}).get("x", -1),
                 "y": current.get("crosshair", {}).get("y", -1),
                 "enabled": self.crosshair_enable_check.isChecked() if hasattr(self, "crosshair_enable_check") else current.get("crosshair", {}).get("enabled", False),
