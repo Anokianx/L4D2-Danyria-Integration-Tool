@@ -1,7 +1,7 @@
 # Danyria 1.1.0 开发者文档 / Developer Documentation
 
 作者 / Author：B站 千早ですわ  
-版本 / Version：1.1.0  
+版本 / Version：1.2.5.2  
 适用游戏 / Target Game：Left 4 Dead 2
 
 ---
@@ -363,7 +363,108 @@ VScript runs server-side only, so a joining client on a 3rd-party/dedicated serv
 
 ## 12. 2026-09-08 守岸人动态准心正式接入 / Shorekeeper integration
 
+### 中文
+
 - 将确认的第 10 版守岸人绘制模块接入 `Aeme/Shorekeeper.py`，样式标识为 `shorekeeper`。保留蝶翼内部流光、蓝黄发散描边、中心弧线以及沿共同轨迹扩散的流沙和半透明飘带，绘制逻辑与确认版一致。
 - 样式列表新增「守岸人（动态）」，同步主程序内置文案、外部语言包和模块备用名称，共 9 种语言。沿用 HUD 现有鼠标/游戏开火、扩散及平滑退场响应；矩形画布适配屏幕尺寸。
 - 独立 GIF 工具、预览图和历史原型继续保存在项目外，不参与主程序运行和打包。构建脚本现有的 `Aeme` 模块收集自动包含守岸人；修正 `Danyria.spec` 的旧绝对路径，改为以 spec 所在目录定位资源。
 - 验证：12 项离屏测试通过，包括真实 HUD 窗口的射击/松开联动、最大尺寸适配、边界裁切及语言一致性；确认绘制代码与第 10 版一致，PyInstaller 可收集新模块，源码编译检查通过。本次未重新生成 EXE。
+
+### English
+
+- Integrated the finalized Version 10 "Shorekeeper" rendering module into `Aeme/Shorekeeper.py` with the style identifier `shorekeeper`. Retained the butterfly wings' internal flowing light effects, blue-and-yellow radiating outlines, central arcs, and the "quicksand" particles and translucent ribbons that disperse along a shared trajectory; the rendering logic remains consistent with the finalized version.
+- Added "Shorekeeper (Animated)" to the style list, synchronizing the built-in UI text, external language packs, and module aliases across all nine supported languages. Utilized existing HUD response behaviors for mouse/in-game firing, dispersion effects, and smooth exit transitions; the rectangular canvas automatically adapts to screen dimensions.
+- Standalone GIF tools, preview images, and historical prototypes remain outside the project scope and are excluded from the main program's execution and packaging. Updated the `Aeme` module collection logic in the build script to include the Shorekeeper module; corrected the absolute path in `Danyria.spec` to reference resources relative to the spec file's directory.
+- Verification: Passed 12 off-screen tests, covering firing/release interactions within the actual HUD window, maximum size adaptation, boundary clipping, and language consistency. Confirmed rendering code matches Version 10, PyInstaller successfully collects the new module, and source code compilation checks passed. The executable (EXE) was not regenerated in this update.
+
+## 13. 2026-09-18 更新器、HUD 视觉与服务器收藏 / Updater, HUD polish, and server favorites
+
+### 中文
+
+- **GitHub Release 自动更新**：新增 `update_service.py`，从 `Anokianx/L4D2-Danyria-Integration-Tool` 获取最新 Release 元数据、版本号、更新说明和 `Danyria.exe` 资产。每次启动都会自动检查，设置页提供“手动同步更新”和最后同步时间；更新说明保存到本地并在设置页及确认窗口中以可滚动的只读文本完整展示。
+- **确认后自动安装**：用户确认后下载 Release 中的 EXE，优先校验 GitHub 提供的资产摘要；通过独立 PowerShell 进程替换旧文件并重启程序。源码运行环境不会尝试覆盖自身；没有可用更新、网络错误或校验失败时保留当前版本。
+- **Danyria 插件设置重排**：HUD 皮肤选择器从设置弹窗移动到“Danyria 插件”板块，并与速度表、敌人信息卡片重新排列；皮肤选择保存到 `danyria_hud_config.json`，切换语言后控件名称同步刷新。
+- **HUD 视觉整理**：HUD 1 号经典皮肤的速度表改为深色面板、分段渐变速度条、刻度和指针组合；隐藏“等待遥测”“无 HUD 数据”等等待状态和调试占位文本，只保留有效游戏数据与实际事件反馈。
+- **服务器收藏 IP**：服务器模块新增收藏分类、星标列和收藏/取消收藏按钮。收藏使用经过校验的 `IPv4:port` 端点，写入 `danyria_server_favorites.json`，收藏服务器优先排序；即使服务器暂时离线，已收藏条目仍可显示并可直接尝试连接。
+- **验证**：运行 `python -m py_compile Danyria.pyw payload\\danyria_hud\\DanyriaHUD.pyw update_service.py`；运行 `python -m unittest discover -s tests -v`，共 19 项测试通过，并完成主界面离屏启动检查。发布更新时需构建新的 `Danyria.exe`，上传为 Release 中名称完全匹配的资产，并使用可比较的数字版本标签。
+
+### English
+
+- **GitHub Release updater**: added `update_service.py` to read the latest Release metadata, version, notes, and `Danyria.exe` asset from `Anokianx/L4D2-Danyria-Integration-Tool`. Startup checks run every time the app starts; Settings provides manual sync and the last-sync time, while release notes are persisted locally and shown in full inside scrollable read-only viewers in Settings and the confirmation dialog.
+- **Install after confirmation**: after the user confirms, the updater downloads the EXE and verifies the GitHub asset digest when available. A detached PowerShell process replaces the old file and restarts the application. Source-mode runs do not attempt to overwrite themselves; no-update, network-error, and checksum-failure paths keep the current version.
+- **Danyria plugin layout**: moved the HUD skin selector from the Settings dialog into the Danyria Plugin section and rearranged it with the speedometer and enemy-information cards. The selected skin is stored in `danyria_hud_config.json`, and labels refresh with the active language.
+- **HUD visual cleanup**: redesigned the classic skin's speedometer with a dark panel, segmented gradient speed bar, scale marks, and a needle. Removed waiting-telemetry, missing-HUD-data, and similar process-status placeholders so the HUD shows valid game data and actual event feedback only.
+- **Server favorites**: added a favorites source/filter, star column, and favorite/unfavorite controls. Favorites use validated `IPv4:port` endpoints, persist in `danyria_server_favorites.json`, and sort before other servers; an offline favorite remains visible and can still be used for a connection attempt.
+- **Verification**: ran `python -m py_compile Danyria.pyw payload\\danyria_hud\\DanyriaHUD.pyw update_service.py`; ran `python -m unittest discover -s tests -v` with all 19 tests passing, plus an off-screen main-window startup check. For a release, build a new `Danyria.exe`, upload it under that exact asset name, and use a numerically comparable release tag.
+
+## 14. 2026-09-19 扩散 HUD 数据读取 / Spread HUD data input
+
+### 中文
+
+- HUD 插件启动时自动尝试执行 `z_gun_debug_spread 1`，并将控制台输出写入 `danyria_spread_console.log`；扩散 HUD 只解析游戏输出的当前值、平均值和最大值，不读取鼠标左键，也不参与准星扩散逻辑。
+- 保留 Danyria 插件板块的扩散计数器 HUD，复用经典、霓虹、薄荷三套皮肤，支持启用、缩放、透明度和位置调节；AemeCross 不再显示真实扩散开关和响应强度选项。
+- 控制台日志采用单文件、按文件变化的低频读取，避免每帧扫描文件导致速度表、敌人和其他 HUD 卡顿。
+- 最大记录只增不减，当前值由游戏数据直接更新；没有游戏扩散输出时显示为空闲值，不使用鼠标状态伪造扩散数据。
+- 验证：`py_compile` 通过，19 项既有测试通过，主界面离屏启动检查通过。
+
+### English
+
+- The HUD plugin attempts `z_gun_debug_spread 1` at startup and writes console output to `danyria_spread_console.log`. The spread HUD parses only the game's current, average, and maximum values; it does not read the left mouse button or drive crosshair spread.
+- The Danyria Plugin section keeps the spread counter HUD with Classic, Neon, and Mint skins, enable, scale, opacity, and position settings. The AemeCross real-spread switch and response-strength controls are removed.
+- Console output is read from one file at a low frequency only when its file signature changes, avoiding per-frame scans that stalled the speedometer, enemy, and other HUD windows.
+- The recorded maximum never decreases, and current values come directly from game output; when no game spread output is available, the HUD stays idle instead of fabricating spread from mouse state.
+- Verification: `py_compile` passed, all 19 existing tests passed, and the main window passed an off-screen startup check.
+
+## 15. 2026-09-19 多人扩散数据与模式门控 / Multiplayer spread and mode gating
+
+### 中文
+
+- 多人/第三方模式沿用现有内存 HUD 的读取链路，从本地玩家的当前武器网络属性 `m_fAccuracyPenalty` 读取扩散当前值，并在 HUD 进程侧计算平均值和最大值；扩散数据不会被控制台日志回退值覆盖。
+- 多人/第三方模式只能在检测到游戏进程时开启；游戏退出后会自动关闭该模式并停止 HUD 进程。
+
+### English
+
+- Multiplayer / third-party mode follows the existing memory HUD path, reading `m_fAccuracyPenalty` from the local player's active weapon and computing average and maximum values in the HUD process; console-log fallback data cannot overwrite the memory values.
+- Multiplayer / third-party mode can only be enabled while the game process is detected, and it is automatically disabled with the HUD process when the game exits.
+
+## 16. 2026-09-19 自动更新重启工作目录 / Updater restart working directory
+
+### 中文
+
+- 更新器替换 EXE 后，启动新程序时明确使用 EXE 所在目录作为工作目录，避免打包程序从 PowerShell 当前目录查找旁边的 DLL，导致更新成功但自动重启报缺少 DLL。
+- 新增重启脚本回归测试，确认 `Start-Process` 使用目标程序目录。
+
+### English
+
+- After replacing the EXE, the updater now starts it with the executable directory as its working directory, preventing packaged DLL lookup from falling back to PowerShell's current directory.
+- Added a regression test for the restart script's working directory.
+
+## 17. 2026-09-24 鸠动态准星 / Jiu dynamic crosshair
+
+### 中文
+
+- 新增 Phigros 鸠主题动态准星，移除蝴蝶结造型，将羽毛沿上下左右四轴对称排列，使用粉色主题色到羽毛自身的粉白渐变，并保留中心留空瞄点。
+- 射击时加入羽毛四周的弥散几何粒子、上下两端的音符判定线、与中心四弧同角度对齐的扩散弧，以及避开中心的七位随机分数动画；增加细羽脉络、轴向菱形和边缘光迹。
+- 判定线调整为以中心横轴向左右展开，音符沿上下方向落向横轴；横向羽毛的径向位移和摆幅随扩散增强，中心四弧改用鸠瞳色的金紫渐变。
+- 根据预览反馈恢复羽毛的第二版运动幅度和形态，移除中心闪烁横条；重写 SCORE 五字母线段字形并按数字宽度重新居中，分数仅在射击期间递增至 1000000，准星收回并隐藏后归零，下一次射击重新开始；判定线略向外延展；音符改为两侧多组简约描边小长方框，沿独立恒速时间轴加速短距离渐显，循环边界加入短暂空窗并随机落向判定线的大部分横向位置，命中时补充径向碎光和菱形粒子；射击时四组羽毛旋转为外扩的 X 对称，分数面板移到中心正上方。
+
+### English
+
+- Added a Phigros Jiu dynamic crosshair with four-axis symmetric feathers, a pink-theme-to-pearl feather gradient, and a clear center; the bow shape was removed.
+- Added geometric dust around the feathers, note judgement lines at the top and bottom, spread arcs aligned to the four center arcs, and a seven-digit pseudo-random score animation kept away from the aiming center.
+- The judgement line now expands horizontally from the center while notes fall vertically onto it; horizontal feathers follow the spread outward with stronger flutter, and the four center arcs use a gold-violet eye-color palette.
+- Restored the second feather motion pass from the preview feedback, removed the center flashing bar, rewrote the SCORE glyphs as independent line segments with equal-width R/E forms centered against the number width, made the score advance only while firing toward 1000000 and reset after the crosshair retracts and hides, and extended the judgement line slightly; notes use a faster independent constant-speed timeline with short randomized paths, smooth fade-in, a brief empty reset gap, broad coverage of the judgement line, and radial shard/diamond hit particles; firing rotates all four feathers into a more open X symmetry and centers the score panel above the aim point.
+
+## 18. 2026-09-30 朽叶千咲动态准星 / Chisa dynamic crosshair
+
+### 中文
+
+- 修正开始和停止射击时的飘带鬼畜：摆动与流光改用与射击强度无关的连续相位，射击强度只改变摆幅、亮度和描边；非射击状态降低飘带与流光速度，射击时切面与飘带增加柔和红色弥散描边，切面流光由银白渐变为绯红。
+- 恢复概念样例版鸣潮朽叶千咲主题动态准星，使用银黑切面、红色飘带弦线和外围碎片结构；中心保持清晰瞄点。
+- 红色能量弦收掉小尾带，上下飘带分别使用相反局部斜率，使经过镜像后各自的尾部都略向上飘，并形成扁平 X 流向；叠加沿主弦移动的白红荧光高亮、流光节点、横向短刃标记、外围弥散碎片和断裂光，把各部分连成解弦之眼。
+
+### English
+
+- Fixed ribbon glitches at firing start and release by using continuous phases independent of firing strength; firing strength changes amplitude, brightness, and edge glow only. Ribbon and glint motion is slower while idle, while firing adds soft red edge glow to the facets and ribbons and shifts the facet highlight from silver-white to crimson.
+- Restored the concept-sample version of the Wuthering Waves Chisa dynamic crosshair with silver-black facets, red ribbon strings, and peripheral fragments while keeping the center clear.
+- Small tails are removed, and upper and lower ribbons use opposite local slopes so mirroring makes each tail drift slightly upward into a shallow X flow, with moving white-red fluorescent highlights, horizontal blade marks, peripheral diffuse fragments, and fracture light.

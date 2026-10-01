@@ -23,10 +23,20 @@ import zlib
 import math
 import queue
 import threading
+import tempfile
+import datetime
+import ipaddress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional
 from Aeme import DYNAMIC_STYLES, STYLES, style_label
+from update_service import (
+    download_asset,
+    fetch_latest_release,
+    is_newer_version,
+    launch_replacement,
+    normalize_repository,
+)
 
 # ---------------------------------------------------------------------------
 # HUD 运行时依赖预加载。HUD 作为数据文件通过 runpy 嵌入启动，打包器不会自动分析它的导入。
@@ -68,11 +78,13 @@ NativeQMessageBox = QMessageBox
 # Application constants and file-format constants.
 # ---------------------------------------------------------------------------
 APP_NAME = "Danyria"
-APP_VERSION = "1.2.4"
+APP_VERSION = "1.2.5.2"
 CONFIG_NAME = "danyria_config.json"
 VPK_MAGIC = 0x55AA1234
 DIR_INDEX = 0x7FFF
 L4D2_APP_ID = "550"
+UPDATE_REPOSITORY = "Anokianx/L4D2-Danyria-Integration-Tool"
+UPDATE_ASSET_NAME = "Danyria.exe"
 
 
 # ===========================================================================
@@ -573,6 +585,20 @@ def steam_server_addrs(dll_dirs, appid=550, timeout=8.0, max_servers=400):
     return addrs
 
 
+def server_endpoint(row):
+    raw = str(row.get("addr") or row.get("ip") or "").strip()
+    if not raw:
+        match = re.search(r"\b\d{1,3}(?:\.\d{1,3}){3}:\d+\b", str(row.get("connect") or ""))
+        raw = match.group(0) if match else ""
+    host, separator, port = raw.partition(":")
+    try:
+        host = str(ipaddress.IPv4Address(host))
+        port = int(port if separator else row.get("port") or 27015)
+        return f"{host}:{port}" if 1 <= port <= 65535 else ""
+    except (ValueError, TypeError):
+        return ""
+
+
 class ServerBrowser:
 
     def __init__(self, steam_dll_dirs=None):
@@ -587,6 +613,33 @@ class ServerBrowser:
         self._master = []
         self._master_t = 0.0
         self._steam_dll_dirs = steam_dll_dirs or []
+        self.favorites = {}
+
+    def set_favorites(self, favorites):
+        with self.lock:
+            self.favorites = {addr: dict(row) for addr, row in favorites.items()}
+            self.dirty = True
+
+    def refresh_favorites(self):
+        from concurrent.futures import ThreadPoolExecutor
+        with self.lock:
+            favorites = dict(self.favorites)
+
+        def query(addr):
+            host, port = addr.rsplit(":", 1)
+            info = a2s_info(host, int(port))
+            return addr, info if info and info.get("appid") == 550 else None
+
+        with ThreadPoolExecutor(max_workers=12) as executor:
+            results = dict(executor.map(query, favorites))
+        with self.lock:
+            if self.mode == "favorites":
+                self.servers = {
+                    addr: {**(results.get(addr) or row), "source": "favorites", "offline": not bool(results.get(addr))}
+                    for addr, row in self.favorites.items()
+                }
+                self.status = ""
+                self.dirty = True
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -620,7 +673,9 @@ class ServerBrowser:
         while not self.stop_event.is_set():
             mode = self.mode
             try:
-                if mode == "internet":
+                if mode == "favorites":
+                    self.refresh_favorites()
+                elif mode == "internet":
                     now = time.time()
                     if now - self._master_t > 120:
                         with self.lock:
@@ -4136,6 +4191,67 @@ I18N_RUNTIME_ENV = {
 }
 I18N = _merge_i18n_pack(I18N, I18N_RUNTIME_ENV)
 
+I18N_UPDATE = {
+    "zh": {
+        "update_title": "自动更新",
+        "update_install": "确认更新并重启",
+        "update_desc": "启动时自动检查 GitHub Release；发现新版后只需确认一次，程序会自动下载、替换并重启。",
+        "update_sync_now": "手动同步更新",
+        "update_checking": "正在同步 Release 信息……",
+        "update_up_to_date": "当前已经是最新版本",
+        "update_ready": "发现新版本 {version}",
+        "update_unavailable": "更新源尚未配置",
+        "update_failed": "同步失败：{reason}",
+        "update_confirm_title": "发现 Danyria 新版本",
+        "update_confirm_body": "版本：{version}\n\n{notes}\n\n现在下载并自动重启更新吗？",
+        "update_downloading": "正在下载 {version}，完成后会自动重启……",
+        "update_download_failed": "更新下载失败：{reason}",
+        "update_restart": "更新文件已准备好，程序将自动重启。",
+        "update_last_sync": "最后同步：{time}",
+        "update_last_sync_none": "最后同步：尚未同步",
+        "update_release_page": "Release 页面",
+    },
+    "zh_CN": {
+        "update_title": "自动更新",
+        "update_install": "确认更新并重启",
+        "update_desc": "启动时自动检查 GitHub Release；发现新版后只需确认一次，程序会自动下载、替换并重启。",
+        "update_sync_now": "手动同步更新",
+        "update_checking": "正在同步 Release 信息……",
+        "update_up_to_date": "当前已经是最新版本",
+        "update_ready": "发现新版本 {version}",
+        "update_unavailable": "更新源尚未配置",
+        "update_failed": "同步失败：{reason}",
+        "update_confirm_title": "发现 Danyria 新版本",
+        "update_confirm_body": "版本：{version}\n\n{notes}\n\n现在下载并自动重启更新吗？",
+        "update_downloading": "正在下载 {version}，完成后会自动重启……",
+        "update_download_failed": "更新下载失败：{reason}",
+        "update_restart": "更新文件已准备好，程序将自动重启。",
+        "update_last_sync": "最后同步：{time}",
+        "update_last_sync_none": "最后同步：尚未同步",
+        "update_release_page": "Release 页面",
+    },
+    "en": {
+        "update_title": "Automatic updates",
+        "update_install": "Update and restart",
+        "update_desc": "Danyria checks GitHub Releases at startup. After you confirm a new version once, it downloads, replaces, and restarts automatically.",
+        "update_sync_now": "Sync updates now",
+        "update_checking": "Syncing Release information…",
+        "update_up_to_date": "You are using the latest version",
+        "update_ready": "New version {version} found",
+        "update_unavailable": "The update source is not configured",
+        "update_failed": "Sync failed: {reason}",
+        "update_confirm_title": "New Danyria version found",
+        "update_confirm_body": "Version: {version}\n\n{notes}\n\nDownload and restart to update now?",
+        "update_downloading": "Downloading {version}; Danyria will restart automatically when ready…",
+        "update_download_failed": "Update download failed: {reason}",
+        "update_restart": "The update is ready. Danyria will restart automatically.",
+        "update_last_sync": "Last sync: {time}",
+        "update_last_sync_none": "Last sync: never",
+        "update_release_page": "Release page",
+    },
+}
+I18N = _merge_i18n_pack(I18N, I18N_UPDATE)
+
 
 I18N_LANG_FILL = {
     "ja": {
@@ -4362,15 +4478,15 @@ I18N_LANG_FILL = {
 I18N = _merge_i18n_pack(I18N, I18N_LANG_FILL)
 
 I18N_HUD_STYLE = {
-    "zh": {"hud_style_label": "HUD 皮肤", "hud_style_classic": "经典", "hud_style_acg": "达妮娅 ACG"},
-    "zh_CN": {"hud_style_label": "HUD 皮肤", "hud_style_classic": "经典", "hud_style_acg": "达妮娅 ACG"},
-    "en": {"hud_style_label": "HUD Skin", "hud_style_classic": "Classic", "hud_style_acg": "Danyria ACG"},
-    "ja": {"hud_style_label": "HUD スキン", "hud_style_classic": "クラシック", "hud_style_acg": "ダーニャ ACG"},
-    "ko": {"hud_style_label": "HUD 스킨", "hud_style_classic": "클래식", "hud_style_acg": "다냐 ACG"},
-    "ru": {"hud_style_label": "Скин HUD", "hud_style_classic": "Классический", "hud_style_acg": "Danyria ACG"},
-    "de": {"hud_style_label": "HUD-Skin", "hud_style_classic": "Klassisch", "hud_style_acg": "Danyria ACG"},
-    "fr": {"hud_style_label": "Skin du HUD", "hud_style_classic": "Classique", "hud_style_acg": "Danyria ACG"},
-    "es": {"hud_style_label": "Skin del HUD", "hud_style_classic": "Clásico", "hud_style_acg": "Danyria ACG"},
+    "zh": {"hud_style_label": "HUD 皮肤", "hud_style_classic": "经典", "hud_style_acg": "霓虹", "hud_style_mint": "薄荷"},
+    "zh_CN": {"hud_style_label": "HUD 皮肤", "hud_style_classic": "经典", "hud_style_acg": "霓虹", "hud_style_mint": "薄荷"},
+    "en": {"hud_style_label": "HUD Skin", "hud_style_classic": "Classic", "hud_style_acg": "Neon", "hud_style_mint": "Mint"},
+    "ja": {"hud_style_label": "HUD スキン", "hud_style_classic": "クラシック", "hud_style_acg": "ネオン", "hud_style_mint": "ミント"},
+    "ko": {"hud_style_label": "HUD 스킨", "hud_style_classic": "클래식", "hud_style_acg": "네온", "hud_style_mint": "민트"},
+    "ru": {"hud_style_label": "Скин HUD", "hud_style_classic": "Классический", "hud_style_acg": "Неон", "hud_style_mint": "Мятный"},
+    "de": {"hud_style_label": "HUD-Skin", "hud_style_classic": "Klassisch", "hud_style_acg": "Neon", "hud_style_mint": "Mint"},
+    "fr": {"hud_style_label": "Skin du HUD", "hud_style_classic": "Classique", "hud_style_acg": "Néon", "hud_style_mint": "Menthe"},
+    "es": {"hud_style_label": "Skin del HUD", "hud_style_classic": "Clásico", "hud_style_acg": "Neón", "hud_style_mint": "Menta"},
 }
 I18N = _merge_i18n_pack(I18N, I18N_HUD_STYLE)
 
@@ -4392,6 +4508,8 @@ I18N_CROSSHAIR = {
         "crosshair_style_x": "X 型",
         "crosshair_style_diamond": "菱形",
         "crosshair_style_aimis": "爱弥斯（动态）",
+        "crosshair_style_jiu": "鸠（动态）",
+        "crosshair_style_chisa": "朽叶千咲（动态）",
         "crosshair_style_shorekeeper": "守岸人（动态）",
         "crosshair_color": "颜色",
         "crosshair_choose_color": "选择颜色",
@@ -4416,6 +4534,8 @@ I18N_CROSSHAIR = {
         "crosshair_style_x": "X 型",
         "crosshair_style_diamond": "菱形",
         "crosshair_style_aimis": "爱弥斯（动态）",
+        "crosshair_style_jiu": "鸠（动态）",
+        "crosshair_style_chisa": "朽叶千咲（动态）",
         "crosshair_style_shorekeeper": "守岸人（动态）",
         "crosshair_color": "颜色",
         "crosshair_choose_color": "选择颜色",
@@ -4440,6 +4560,8 @@ I18N_CROSSHAIR = {
         "crosshair_style_x": "X",
         "crosshair_style_diamond": "Diamond",
         "crosshair_style_aimis": "Aemeath (Dynamic)",
+        "crosshair_style_jiu": "Jiu (Dynamic)",
+        "crosshair_style_chisa": "Chisa (Dynamic)",
         "crosshair_style_shorekeeper": "Shorekeeper (Dynamic)",
         "crosshair_color": "Color",
         "crosshair_choose_color": "Choose color",
@@ -4464,6 +4586,8 @@ I18N_CROSSHAIR = {
         "crosshair_style_x": "X",
         "crosshair_style_diamond": "ダイヤ",
         "crosshair_style_aimis": "エイメス（動的）",
+        "crosshair_style_jiu": "鸠（動的）",
+        "crosshair_style_chisa": "千咲（動的）",
         "crosshair_style_shorekeeper": "ショアキーパー（動的）",
         "crosshair_color": "色",
         "crosshair_choose_color": "色を選択",
@@ -4488,6 +4612,8 @@ I18N_CROSSHAIR = {
         "crosshair_style_x": "X",
         "crosshair_style_diamond": "다이아몬드",
         "crosshair_style_aimis": "에이메스(동적)",
+        "crosshair_style_jiu": "鸠(동적)",
+        "crosshair_style_chisa": "치사 (동적)",
         "crosshair_style_shorekeeper": "파수인(동적)",
         "crosshair_color": "색상",
         "crosshair_choose_color": "색상 선택",
@@ -4512,6 +4638,8 @@ I18N_CROSSHAIR = {
         "crosshair_style_x": "X",
         "crosshair_style_diamond": "Ромб",
         "crosshair_style_aimis": "Эймис (динамический)",
+        "crosshair_style_jiu": "Цзю (динамический)",
+        "crosshair_style_chisa": "Чиса (динамический)",
         "crosshair_style_shorekeeper": "Хранительница Берегов (динамический)",
         "crosshair_color": "Цвет",
         "crosshair_choose_color": "Выбрать цвет",
@@ -4536,6 +4664,8 @@ I18N_CROSSHAIR = {
         "crosshair_style_x": "X",
         "crosshair_style_diamond": "Diamant",
         "crosshair_style_aimis": "Aemeath (dynamisch)",
+        "crosshair_style_jiu": "Jiu (dynamisch)",
+        "crosshair_style_chisa": "Chisa (dynamisch)",
         "crosshair_style_shorekeeper": "Shorekeeper (dynamisch)",
         "crosshair_color": "Farbe",
         "crosshair_choose_color": "Farbe wählen",
@@ -4560,6 +4690,8 @@ I18N_CROSSHAIR = {
         "crosshair_style_x": "X",
         "crosshair_style_diamond": "Losange",
         "crosshair_style_aimis": "Aemeath (dynamique)",
+        "crosshair_style_jiu": "Jiu (dynamique)",
+        "crosshair_style_chisa": "Chisa (dynamique)",
         "crosshair_style_shorekeeper": "Shorekeeper (dynamique)",
         "crosshair_color": "Couleur",
         "crosshair_choose_color": "Choisir la couleur",
@@ -4584,6 +4716,8 @@ I18N_CROSSHAIR = {
         "crosshair_style_x": "X",
         "crosshair_style_diamond": "Diamante",
         "crosshair_style_aimis": "Aemeath (dinámica)",
+        "crosshair_style_jiu": "Jiu (dinámica)",
+        "crosshair_style_chisa": "Chisa (dinámica)",
         "crosshair_style_shorekeeper": "Shorekeeper (dinámica)",
         "crosshair_color": "Color",
         "crosshair_choose_color": "Elegir color",
@@ -4597,6 +4731,14 @@ I18N_CROSSHAIR = {
     },
 }
 I18N = _merge_i18n_pack(I18N, I18N_CROSSHAIR)
+
+I18N_SPREAD = {
+    "zh": {"hud_spread_title": "真实扩散计数器", "hud_spread_desc": "显示游戏反馈的当前值、平均值和最大值。", "hud_enable_spread": "启用扩散计数器 HUD", "hud_spread_current": "当前值", "hud_spread_average": "平均值", "hud_spread_max": "最大值", "hud_spread_live": "GAME FEEDBACK", "hud_spread_hint": "来源：z_gun_debug_spread"},
+    "zh_CN": {"hud_spread_title": "真实扩散计数器", "hud_spread_desc": "显示游戏反馈的当前值、平均值和最大值。", "hud_enable_spread": "启用扩散计数器 HUD", "hud_spread_current": "当前值", "hud_spread_average": "平均值", "hud_spread_max": "最大值", "hud_spread_live": "GAME FEEDBACK", "hud_spread_hint": "来源：z_gun_debug_spread"},
+    "en": {"hud_spread_title": "REAL SPREAD MONITOR", "hud_spread_desc": "Shows the current, average, and maximum values reported by the game.", "hud_enable_spread": "Enable spread counter HUD", "hud_spread_current": "CURRENT", "hud_spread_average": "AVERAGE", "hud_spread_max": "MAXIMUM", "hud_spread_live": "GAME FEEDBACK", "hud_spread_hint": "Source: z_gun_debug_spread"},
+}
+I18N = _merge_i18n_pack(I18N, I18N_SPREAD)
+
 
 
 # ---------------------------------------------------------------------------
@@ -6763,6 +6905,10 @@ class DanyriaWindow(QMainWindow):
         self._resize_start_geo = None
         self.cursor_overlay = None
         self.hud_process = None
+        self._update_queue = queue.Queue()
+        self._update_thread = None
+        self._update_settings_widgets = {}
+        self._update_metadata = None
         self.load_config()
 
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
@@ -6780,7 +6926,11 @@ class DanyriaWindow(QMainWindow):
         self.apply_theme(self.theme_key, initial=True)
         QTimer.singleShot(600, lambda: self.ensure_steam_integration(silent=True))
         QTimer.singleShot(900, self.auto_check_runtime_environment)
+        QTimer.singleShot(1600, self.auto_check_for_updates)
         QTimer.singleShot(0, self.sync_overlay_geometry)
+        self._update_poll_timer = QTimer(self)
+        self._update_poll_timer.timeout.connect(self._drain_update_queue)
+        self._update_poll_timer.start(100)
         if self.l4d2:
             self.path_edit.setText(str(self.l4d2))
         else:
@@ -6810,6 +6960,181 @@ class DanyriaWindow(QMainWindow):
             cfg_path().write_text(json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
+
+    def update_repository(self) -> str:
+        configured = os.environ.get("DANYRIA_UPDATE_REPOSITORY", "") or self.config.get("update_repository", "") or UPDATE_REPOSITORY
+        return normalize_repository(configured)
+
+    def update_last_sync_text(self) -> str:
+        value = str(self.config.get("update_last_sync", "") or "").strip()
+        if not value:
+            return self.t("update_last_sync_none")
+        try:
+            stamp = datetime.datetime.fromisoformat(value)
+            value = stamp.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            value = value.replace("T", " ")
+        return self.t("update_last_sync", time=value)
+
+    def _update_settings_text(self, status=None):
+        widgets = self._update_settings_widgets
+        if not widgets:
+            return
+        try:
+            if status is not None:
+                widgets["status"].setText(status)
+            widgets["last_sync"].setText(self.update_last_sync_text())
+            metadata = self._update_metadata or {"body": self.config.get("update_last_release_notes", "")}
+            notes = str(metadata.get("body") or "").strip()
+            widgets["notes"].setPlainText(notes if notes else self.t("none"))
+        except (RuntimeError, KeyError):
+            self._update_settings_widgets = {}
+
+    def _update_message_parent(self):
+        dialog = self._update_settings_widgets.get("dialog") if self._update_settings_widgets else None
+        try:
+            if dialog is not None and dialog.isVisible():
+                return dialog
+        except RuntimeError:
+            pass
+        return self
+
+    def auto_check_for_updates(self):
+        if not getattr(sys, "frozen", False):
+            return
+        self.check_for_updates(manual=False)
+
+    def check_for_updates(self, manual=True):
+        if self._update_thread is not None and self._update_thread.is_alive():
+            return
+        repository = self.update_repository()
+        if not repository:
+            self._update_settings_text(self.t("update_unavailable"))
+            if manual:
+                QMessageBox.warning(self._update_message_parent(), self.t("update_title"), self.t("update_unavailable"))
+            return
+        self._update_settings_text(self.t("update_checking"))
+        if "sync_btn" in self._update_settings_widgets:
+            self._update_settings_widgets["sync_btn"].setEnabled(False)
+
+        def worker():
+            try:
+                metadata = fetch_latest_release(repository, UPDATE_ASSET_NAME)
+                self._update_queue.put(("check_ok", metadata, manual))
+            except Exception as exc:
+                self._update_queue.put(("check_failed", str(exc), manual))
+
+        self._update_thread = threading.Thread(target=worker, name="DanyriaUpdateCheck", daemon=True)
+        self._update_thread.start()
+
+    def _show_update_confirmation(self, metadata, manual):
+        version = metadata.get("version") or metadata.get("tag") or ""
+        notes = str(metadata.get("body") or "").strip() or self.t("none")
+        dlg, root = self.create_themed_dialog(self.t("update_confirm_title"), min_width=600, size=(660, 520))
+        heading = QLabel(self.t("update_ready", version=version))
+        heading.setTextFormat(Qt.TextFormat.PlainText)
+        heading.setWordWrap(True)
+        root.addWidget(heading)
+        notes_view = QTextEdit()
+        notes_view.setObjectName("ReleaseNotes")
+        notes_view.setReadOnly(True)
+        notes_view.setPlainText(notes)
+        root.addWidget(notes_view, 1)
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        cancel = QPushButton(self.t("cancel"))
+        confirm = QPushButton(self.t("update_install"))
+        confirm.setProperty("accent", True)
+        cancel.clicked.connect(dlg.reject)
+        confirm.clicked.connect(dlg.accept)
+        actions.addWidget(cancel)
+        actions.addWidget(confirm)
+        root.addLayout(actions)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._start_update_download(metadata)
+        elif not manual:
+            self.config["update_declined_version"] = version
+            self.save_config()
+
+    def _start_update_download(self, metadata):
+        if not getattr(sys, "frozen", False):
+            QMessageBox.information(self._update_message_parent(), self.t("update_title"), self.t("update_unavailable"))
+            return
+        asset_url = str(metadata.get("asset_url") or "").strip()
+        if not asset_url:
+            QMessageBox.warning(self._update_message_parent(), self.t("update_title"), self.t("update_download_failed", reason="Release asset URL is missing"))
+            return
+        target = Path(sys.executable).resolve()
+        package_dir = Path(tempfile.mkdtemp(prefix="danyria-update-"))
+        package = package_dir / UPDATE_ASSET_NAME
+        self._update_settings_text(self.t("update_downloading", version=metadata.get("version", "")))
+        if "sync_btn" in self._update_settings_widgets:
+            self._update_settings_widgets["sync_btn"].setEnabled(False)
+
+        def worker():
+            try:
+                digest = download_asset(asset_url, package, str(metadata.get("sha256") or ""))
+                self._update_queue.put(("download_ok", metadata, target, package, digest))
+            except Exception as exc:
+                self._update_queue.put(("download_failed", str(exc), package))
+
+        self._update_thread = threading.Thread(target=worker, name="DanyriaUpdateDownload", daemon=True)
+        self._update_thread.start()
+
+    def _drain_update_queue(self):
+        while True:
+            try:
+                message = self._update_queue.get_nowait()
+            except queue.Empty:
+                break
+            kind = message[0]
+            if kind == "check_ok":
+                metadata, manual = message[1], bool(message[2])
+                self._update_metadata = metadata
+                self.config["update_last_sync"] = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+                self.config["update_last_release_version"] = str(metadata.get("version") or "")
+                self.config["update_last_release_notes"] = str(metadata.get("body") or "")
+                self.config["update_last_release_url"] = str(metadata.get("html_url") or "")
+                self.save_config()
+                version = str(metadata.get("version") or metadata.get("tag") or "")
+                if "sync_btn" in self._update_settings_widgets:
+                    self._update_settings_widgets["sync_btn"].setEnabled(True)
+                if is_newer_version(version, APP_VERSION):
+                    self._update_settings_text(self.t("update_ready", version=version))
+                    if manual or self.config.get("update_declined_version") != version:
+                        self._show_update_confirmation(metadata, manual)
+                else:
+                    self._update_settings_text(self.t("update_up_to_date"))
+                    if manual:
+                        QMessageBox.information(self._update_message_parent(), self.t("update_title"), self.t("update_up_to_date"))
+            elif kind == "check_failed":
+                reason, manual = message[1], bool(message[2])
+                if "sync_btn" in self._update_settings_widgets:
+                    self._update_settings_widgets["sync_btn"].setEnabled(True)
+                self._update_settings_text(self.t("update_failed", reason=reason))
+                if manual:
+                    QMessageBox.warning(self._update_message_parent(), self.t("update_title"), self.t("update_failed", reason=reason))
+            elif kind == "download_ok":
+                metadata, target, package = message[1], message[2], message[3]
+                try:
+                    launch_replacement(os.getpid(), target, package)
+                    self._update_settings_text(self.t("update_restart"))
+                    self.close()
+                    QApplication.instance().quit()
+                except Exception as exc:
+                    self._update_settings_text(self.t("update_download_failed", reason=str(exc)))
+                    QMessageBox.warning(self._update_message_parent(), self.t("update_title"), self.t("update_download_failed", reason=str(exc)))
+            elif kind == "download_failed":
+                reason, package = message[1], message[2]
+                if "sync_btn" in self._update_settings_widgets:
+                    self._update_settings_widgets["sync_btn"].setEnabled(True)
+                try:
+                    Path(package).unlink(missing_ok=True)
+                    Path(package).parent.rmdir()
+                except Exception:
+                    pass
+                self._update_settings_text(self.t("update_download_failed", reason=reason))
+                QMessageBox.warning(self._update_message_parent(), self.t("update_title"), self.t("update_download_failed", reason=reason))
 
     def icon_path_for_theme(self, key=None, target=False) -> Path:
         key = key or self.theme_key
@@ -7391,6 +7716,50 @@ QCheckBox::indicator:disabled {{
         self.plugin_subtitle.setWordWrap(True)
         self.plugin_subtitle.setVisible(False)
 
+        self.hud_style_card = QFrame(objectName="PathCard")
+        hud_style_l = QHBoxLayout(self.hud_style_card)
+        hud_style_l.setContentsMargins(14, 10, 14, 10)
+        hud_style_l.setSpacing(12)
+        self.hud_style_label = QLabel(self.t("hud_style_label"))
+        self.hud_style_label.setObjectName("SectionTitle")
+        hud_style_l.addWidget(self.hud_style_label)
+        self.hud_style_combo = QComboBox()
+        self.hud_style_combo.addItem("1 · " + self.t("hud_style_classic"), "classic")
+        self.hud_style_combo.addItem("2 · " + self.t("hud_style_acg"), "acg")
+        self.hud_style_combo.addItem("3 · " + self.t("hud_style_mint"), "mint")
+        current_style = str(self.read_hud_config().get("hud_style", "classic"))
+        self.hud_style_combo.setCurrentIndex({"classic": 0, "acg": 1, "mint": 2}.get(current_style, 0))
+        self.hud_style_combo.setMinimumWidth(220)
+        self.hud_style_combo.currentIndexChanged.connect(lambda *_: self.quick_set_hud_style())
+        hud_style_l.addWidget(self.hud_style_combo)
+        hud_style_l.addStretch(1)
+        plugin_l.addWidget(self.hud_style_card)
+
+        self.spread_card = QFrame(objectName="PathCard")
+        spread_l = QVBoxLayout(self.spread_card)
+        spread_l.setContentsMargins(14, 10, 14, 10)
+        spread_l.setSpacing(6)
+        self.spread_title = QLabel(self.t("hud_spread_title"))
+        self.spread_title.setObjectName("SectionTitle")
+        self.spread_desc = QLabel(self.t("hud_spread_desc"))
+        self.spread_desc.setObjectName("Muted")
+        self.spread_desc.setWordWrap(True)
+        spread_l.addWidget(self.spread_title)
+        spread_l.addWidget(self.spread_desc)
+        self.spread_enable_check = QCheckBox(self.t("hud_enable_spread"))
+        self.spread_enable_check.toggled.connect(lambda checked: self.quick_set_hud_enabled("spread", checked))
+        spread_l.addWidget(self.spread_enable_check)
+        spread_grid = QGridLayout()
+        spread_grid.setContentsMargins(0, 0, 0, 0)
+        spread_grid.setHorizontalSpacing(12)
+        spread_grid.setVerticalSpacing(7)
+        spread_grid.setColumnStretch(0, 1)
+        spread_grid.setColumnMinimumWidth(1, 88)
+        self.spread_scale_label, self.spread_scale_edit = self.hud_param_row(spread_grid, 0, self.t("hud_scale"), "1.0")
+        self.spread_opacity_label, self.spread_opacity_edit = self.hud_param_row(spread_grid, 1, self.t("hud_opacity"), "0.92")
+        spread_l.addLayout(spread_grid)
+        plugin_l.addWidget(self.spread_card)
+
         cards = QHBoxLayout()
         cards.setSpacing(12)
 
@@ -7432,15 +7801,12 @@ QCheckBox::indicator:disabled {{
 
         self.hud_settings_title = QLabel(self.t("hud_windows_title"))
         self.hud_settings_title.setObjectName("SectionTitle")
-        plugin_l.addWidget(self.hud_settings_title)
+        self.hud_settings_title.hide()
 
         self.hud_settings_hint = QLabel(self.t("hud_settings_hint"))
         self.hud_settings_hint.setObjectName("TinyText")
         self.hud_settings_hint.setWordWrap(True)
-        plugin_l.addWidget(self.hud_settings_hint)
-
-        settings_row = QHBoxLayout()
-        settings_row.setSpacing(16)
+        self.hud_settings_hint.hide()
 
         self.speed_settings_card = QFrame(objectName="PathCard")
         self.speed_settings_card.setMinimumWidth(220)
@@ -7449,7 +7815,7 @@ QCheckBox::indicator:disabled {{
         sp_l.setSpacing(8)
         self.speed_settings_title = QLabel(self.t("speed_window"))
         self.speed_settings_title.setObjectName("SectionTitle")
-        sp_l.addWidget(self.speed_settings_title)
+        self.speed_settings_title.hide()
 
         sp_grid = QGridLayout()
         sp_grid.setContentsMargins(0, 0, 0, 0)
@@ -7462,7 +7828,7 @@ QCheckBox::indicator:disabled {{
         self.speed_scale_label, self.speed_scale_edit = self.hud_param_row(sp_grid, 0, self.t("hud_scale"), "1.0")
         self.speed_opacity_label, self.speed_opacity_edit = self.hud_param_row(sp_grid, 1, self.t("hud_opacity"), "0.95")
         self.speed_max_label, self.speed_max_edit = self.hud_param_row(sp_grid, 2, self.t("hud_max_speed"), "420")
-        settings_row.addWidget(self.speed_settings_card, 1)
+        speed_l.addWidget(self.speed_settings_card)
 
         self.enemy_settings_card = QFrame(objectName="PathCard")
         self.enemy_settings_card.setMinimumWidth(240)
@@ -7471,7 +7837,7 @@ QCheckBox::indicator:disabled {{
         en_l.setSpacing(8)
         self.enemy_settings_title = QLabel(self.t("enemy_window"))
         self.enemy_settings_title.setObjectName("SectionTitle")
-        en_l.addWidget(self.enemy_settings_title)
+        self.enemy_settings_title.hide()
 
         en_grid = QGridLayout()
         en_grid.setContentsMargins(0, 0, 0, 0)
@@ -7485,7 +7851,13 @@ QCheckBox::indicator:disabled {{
         self.enemy_opacity_label, self.enemy_opacity_edit = self.hud_param_row(en_grid, 1, self.t("hud_opacity"), "0.95")
         self.enemy_max_label, self.enemy_max_edit = self.hud_param_row(en_grid, 2, self.t("hud_max_enemies"), "6")
         self.enemy_distance_label, self.enemy_distance_edit = self.hud_param_row(en_grid, 3, self.t("hud_enemy_distance"), "1800")
-        settings_row.addWidget(self.enemy_settings_card, 1)
+        enemy_l.addWidget(self.enemy_settings_card)
+        speed_l.addStretch(1)
+        enemy_l.addStretch(1)
+        self.speed_settings_card.setObjectName("HudInlineSettings")
+        self.enemy_settings_card.setObjectName("HudInlineSettings")
+        sp_l.setContentsMargins(0, 10, 0, 0)
+        en_l.setContentsMargins(0, 10, 0, 0)
 
         self.penalty_settings_card = QFrame(objectName="PathCard")
         self.penalty_settings_card.setMinimumWidth(220)
@@ -7505,7 +7877,6 @@ QCheckBox::indicator:disabled {{
         self.penalty_scale_label, self.penalty_scale_edit = self.hud_param_row(pe_grid, 0, self.t("hud_scale"), "1.0")
         self.penalty_opacity_label, self.penalty_opacity_edit = self.hud_param_row(pe_grid, 1, self.t("hud_opacity"), "0.95")
 
-        plugin_l.addLayout(settings_row)
 
         self.hud_transparent_note = QLabel(self.t("hud_transparent_note"))
         self.hud_transparent_note.setObjectName("TinyText")
@@ -7746,7 +8117,6 @@ QCheckBox::indicator:disabled {{
         self.crosshair_draggable_check = QCheckBox(self.t("crosshair_draggable"))
         self.crosshair_draggable_check.toggled.connect(self.quick_set_crosshair_draggable)
         ch_l.addWidget(self.crosshair_draggable_check)
-
         crosshair_btns = QHBoxLayout()
         self.save_crosshair_settings_btn = self.button(self.t("crosshair_save_settings"), self.save_crosshair_settings, accent=True)
         self.reset_crosshair_position_btn = self.button(self.t("crosshair_reset_position"), self.reset_crosshair_position)
@@ -8007,6 +8377,22 @@ QCheckBox::indicator:disabled {{
             self._retranslate_servers()
             self.plugin_title.setText(self.t("plugin_hud_title"))
             self.plugin_subtitle.setText(self.t("plugin_hud_subtitle"))
+            if hasattr(self, "hud_style_label"):
+                self.hud_style_label.setText(self.t("hud_style_label"))
+                style_values = [
+                    ("1 · " + self.t("hud_style_classic"), "classic"),
+                    ("2 · " + self.t("hud_style_acg"), "acg"),
+                    ("3 · " + self.t("hud_style_mint"), "mint"),
+                ]
+                current_style = self.hud_style_combo.currentData()
+                self.hud_style_combo.blockSignals(True)
+                for i, (label, value) in enumerate(style_values):
+                    self.hud_style_combo.setItemText(i, label)
+                for i in range(self.hud_style_combo.count()):
+                    if self.hud_style_combo.itemData(i) == current_style:
+                        self.hud_style_combo.setCurrentIndex(i)
+                        break
+                self.hud_style_combo.blockSignals(False)
             if hasattr(self, "plugin_card") and hasattr(self.plugin_card, "set_title"):
                 self.plugin_card.set_title(self.t("plugin_hud_title"), self.t("plugin_hud_subtitle"))
             if hasattr(self, "penalty_card") and hasattr(self.penalty_card, "set_title"):
@@ -8021,6 +8407,10 @@ QCheckBox::indicator:disabled {{
             self.enemy_desc.setText(self.t("enemy_health_desc"))
             if hasattr(self, "enemy_enable_check"):
                 self.enemy_enable_check.setText(self.t("hud_enable_enemy"))
+            if hasattr(self, "spread_title"):
+                self.spread_title.setText(self.t("hud_spread_title"))
+                self.spread_desc.setText(self.t("hud_spread_desc"))
+                self.spread_enable_check.setText(self.t("hud_enable_spread"))
             if hasattr(self, "mem_enable_check_hud"):
                 self.mem_enable_check_hud.setText(self.mem_tr("enable"))
             self.hud_plugin_desc.setText(self.t("hud_plugin_desc"))
@@ -8042,6 +8432,9 @@ QCheckBox::indicator:disabled {{
                 self.enemy_scale_label.setText(self.t("hud_scale"))
                 self.enemy_opacity_label.setText(self.t("hud_opacity"))
                 self.enemy_max_label.setText(self.t("hud_max_enemies"))
+                if hasattr(self, "spread_scale_label"):
+                    self.spread_scale_label.setText(self.t("hud_scale"))
+                    self.spread_opacity_label.setText(self.t("hud_opacity"))
                 if hasattr(self, "enemy_distance_label"):
                     self.enemy_distance_label.setText(self.t("hud_enemy_distance"))
                 self.hud_transparent_note.setText(self.t("hud_transparent_note"))
@@ -8154,6 +8547,23 @@ QCheckBox::indicator:disabled {{
             self.populate_table()
 
         self.update_weapon_language()
+        if self._update_settings_widgets:
+            widgets = self._update_settings_widgets
+            try:
+                widgets["title"].setText(self.t("update_title"))
+                widgets["desc"].setText(self.t("update_desc"))
+                widgets["sync_btn"].setText(self.t("update_sync_now"))
+                widgets["last_sync"].setText(self.update_last_sync_text())
+                version = str((self._update_metadata or {}).get("version") or self.config.get("update_last_release_version", "") or "")
+                if version and is_newer_version(version, APP_VERSION):
+                    status = self.t("update_ready", version=version)
+                elif version:
+                    status = self.t("update_up_to_date")
+                else:
+                    status = self.t("update_last_sync_none")
+                widgets["status"].setText(status)
+            except (RuntimeError, KeyError):
+                self._update_settings_widgets = {}
         self.update_status_text()
         self.sync_hud_language_config()
 
@@ -8747,21 +9157,6 @@ QFrame#ThemedDialogFrame QTextEdit {{
         lang_row.addWidget(lang_combo, 1)
         root.addLayout(lang_row)
 
-        hud_skin_row = QHBoxLayout()
-        hud_skin_label = QLabel(self.t("hud_style_label"))
-        hud_skin_combo = QComboBox()
-        hud_skin_combo.addItem("1", "classic")
-        hud_skin_combo.addItem("2", "acg")
-        hud_skin_combo.addItem("3", "mint")
-        try:
-            _cur_skin = str(self.read_hud_config().get("hud_style", "classic"))
-        except Exception:
-            _cur_skin = "classic"
-        hud_skin_combo.setCurrentIndex({"classic": 0, "acg": 1, "mint": 2}.get(_cur_skin, 0))
-        hud_skin_row.addWidget(hud_skin_label)
-        hud_skin_row.addWidget(hud_skin_combo, 1)
-        root.addLayout(hud_skin_row)
-
         startup_cb = QCheckBox(self.t("startup"))
         startup_cb.setChecked(self.is_autostart_enabled())
         if os.name != "nt":
@@ -8806,6 +9201,60 @@ QFrame#ThemedDialogFrame QTextEdit {{
 
         runtime_fix_btn.clicked.connect(check_fix_runtime)
 
+        update_card = QFrame(objectName="PathCard")
+        update_l = QVBoxLayout(update_card)
+        update_l.setContentsMargins(14, 12, 14, 12)
+        update_l.setSpacing(8)
+        update_title = QLabel(self.t("update_title"))
+        update_title.setObjectName("SectionTitle")
+        update_desc = QLabel(self.t("update_desc"))
+        update_desc.setObjectName("TinyText")
+        update_desc.setWordWrap(True)
+        saved_version = str(self.config.get("update_last_release_version", "") or "")
+        if saved_version and is_newer_version(saved_version, APP_VERSION):
+            update_status = self.t("update_ready", version=saved_version)
+        elif saved_version:
+            update_status = self.t("update_up_to_date")
+        else:
+            update_status = self.t("update_last_sync_none")
+        update_status_label = QLabel(update_status)
+        update_status_label.setObjectName("TinyText")
+        update_status_label.setWordWrap(True)
+        update_notes_label = QTextEdit()
+        update_notes_label.setObjectName("ReleaseNotes")
+        update_notes_label.setReadOnly(True)
+        update_notes_label.setPlainText(str(self.config.get("update_last_release_notes", "") or "") or self.t("none"))
+        update_notes_label.setMinimumHeight(92)
+        update_notes_label.setMaximumHeight(190)
+        update_last_sync_label = QLabel(self.update_last_sync_text())
+        update_last_sync_label.setObjectName("TinyText")
+        update_sync_btn = QPushButton(self.t("update_sync_now"))
+        update_sync_btn.setProperty("accent", True)
+        update_l.addWidget(update_title)
+        update_l.addWidget(update_desc)
+        update_l.addWidget(update_status_label)
+        update_l.addWidget(update_notes_label)
+        update_l.addWidget(update_last_sync_label)
+        update_btn_row = QHBoxLayout()
+        update_btn_row.addWidget(update_sync_btn)
+        update_btn_row.addStretch(1)
+        update_l.addLayout(update_btn_row)
+        root.addWidget(update_card)
+        self._update_settings_widgets = {
+            "dialog": dlg,
+            "title": update_title,
+            "desc": update_desc,
+            "status": update_status_label,
+            "notes": update_notes_label,
+            "last_sync": update_last_sync_label,
+            "sync_btn": update_sync_btn,
+        }
+        update_sync_btn.clicked.connect(lambda: self.check_for_updates(manual=True))
+        try:
+            dlg.finished.connect(lambda: setattr(self, "_update_settings_widgets", {}))
+        except Exception:
+            pass
+
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
         cancel_btn = QPushButton(self.t("cancel"))
@@ -8825,12 +9274,6 @@ QFrame#ThemedDialogFrame QTextEdit {{
             if os.name == "nt":
                 self.set_autostart(startup_cb.isChecked())
             self.save_config()
-            try:
-                hcfg = self.read_hud_config()
-                hcfg["hud_style"] = hud_skin_combo.currentData() or "classic"
-                self.write_hud_config(hcfg)
-            except Exception:
-                pass
             self.apply_theme(new_theme)
             self.update_language()
             dlg.accept()
@@ -8971,7 +9414,8 @@ QFrame#ThemedDialogFrame QTextEdit {{
             "speed": {"enabled": False, "x": 80, "y": 90, "scale": 1.0, "opacity": 0.92, "max_speed": 420},
             "enemy": {"enabled": False, "x": 80, "y": 320, "scale": 1.0, "opacity": 0.92, "max_enemies": 6, "max_distance": 1800},
             "penalty": {"enabled": False, "x": 500, "y": 90, "scale": 1.0, "opacity": 0.92},
-            "crosshair": {"enabled": False, "x": -1, "y": -1, "size": 32, "thickness": 2.2, "opacity": 0.85, "color": "#55E7FF", "style": "plus", "draggable": False},
+
+            "spread": {"enabled": False, "x": 500, "y": 320, "scale": 1.0, "opacity": 0.92},
             "memory": {"enabled": False, "warned": False},
         }
 
@@ -8985,7 +9429,7 @@ QFrame#ThemedDialogFrame QTextEdit {{
                     cfg["language"] = loaded.get("language")
                 if isinstance(loaded.get("hud_style"), str):
                     cfg["hud_style"] = loaded.get("hud_style")
-                for section in ("speed", "enemy", "penalty", "crosshair", "memory"):
+                for section in ("speed", "enemy", "penalty", "crosshair", "spread", "memory"):
                     if isinstance(loaded.get(section), dict):
                         cfg.setdefault(section, {}).update(loaded[section])
                 crosshair = cfg.setdefault("crosshair", {})
@@ -8995,6 +9439,8 @@ QFrame#ThemedDialogFrame QTextEdit {{
                 crosshair.setdefault("thickness", 2.2)
                 crosshair.pop("skin", None)
                 crosshair.pop("mode", None)
+                crosshair.pop("real_spread", None)
+                crosshair.pop("real_spread_strength", None)
         except Exception:
             pass
         return cfg
@@ -9007,7 +9453,7 @@ QFrame#ThemedDialogFrame QTextEdit {{
 
     def any_hud_enabled(self, cfg: Optional[dict] = None) -> bool:
         cfg = cfg or self.read_hud_config()
-        return any(bool(cfg.get(section, {}).get("enabled", False)) for section in ("speed", "enemy", "penalty", "crosshair"))
+        return any(bool(cfg.get(section, {}).get("enabled", False)) for section in ("speed", "enemy", "penalty", "crosshair", "spread"))
 
     def ensure_hud_process_running(self, show_errors: bool = False):
         proc = getattr(self, "hud_process", None)
@@ -9026,6 +9472,7 @@ QFrame#ThemedDialogFrame QTextEdit {{
                 ("enemy", "enemy_enable_check"),
                 ("penalty", "penalty_enable_check"),
                 ("crosshair", "crosshair_enable_check"),
+                ("spread", "spread_enable_check"),
             )
             for section, attr in pairs:
                 if hasattr(self, attr):
@@ -9064,6 +9511,18 @@ QFrame#ThemedDialogFrame QTextEdit {{
         except Exception:
             pass
 
+    def quick_set_hud_style(self):
+        if getattr(self, "_loading_hud_ui", False) or not hasattr(self, "hud_style_combo"):
+            return
+        try:
+            cfg = self.read_hud_config()
+            cfg["hud_style"] = self.hud_style_combo.currentData() or "classic"
+            self.write_hud_config(cfg)
+            if self.any_hud_enabled(cfg):
+                self.ensure_hud_process_running(show_errors=False)
+        except Exception:
+            pass
+
 
     MEM_TEXT = {
         "enable": {
@@ -9096,6 +9555,10 @@ QFrame#ThemedDialogFrame QTextEdit {{
             "fr": "Utilisation à vos risques. Activer ?",
             "es": "Úsalo bajo tu responsabilidad. ¿Activar?",
         },
+        "not_in_game": {
+            "zh": "请先进入一张游戏地图，再开启多人/第三方模式。",
+            "en": "Enter a game map before enabling multiplayer / 3rd-party mode.",
+        },
     }
 
     def mem_tr(self, key: str) -> str:
@@ -9116,6 +9579,10 @@ QFrame#ThemedDialogFrame QTextEdit {{
             cfg = self.read_hud_config()
             mem = cfg.setdefault("memory", {})
             if checked:
+                if not self._is_game_running():
+                    QMessageBox.information(self, self.mem_tr("warn_title"), self.mem_tr("not_in_game"))
+                    self._sync_memory_checks(False)
+                    return
                 resp = QMessageBox.question(self, self.mem_tr("warn_title"), self.mem_tr("warn_body"))
                 if resp != QMessageBox.StandardButton.Yes:
                     self._sync_memory_checks(False)
@@ -9132,19 +9599,41 @@ QFrame#ThemedDialogFrame QTextEdit {{
         except Exception:
             pass
 
+    def _memory_mode_tick(self):
+        try:
+            cfg = self.read_hud_config()
+            if not bool(cfg.get("memory", {}).get("enabled", False)):
+                return
+            if self._is_game_running():
+                return
+            cfg.setdefault("memory", {})["enabled"] = False
+            self.write_hud_config(cfg)
+            self._sync_memory_checks(False)
+        except Exception:
+            pass
+
     def load_hud_settings_to_ui(self):
         if not hasattr(self, "speed_scale_edit"):
             return
         cfg = self.read_hud_config()
         speed = cfg["speed"]
         enemy = cfg["enemy"]
+        spread = cfg.get("spread", {})
         crosshair = cfg.get("crosshair", {})
         self._loading_hud_ui = True
         try:
+            if hasattr(self, "hud_style_combo"):
+                style_value = str(cfg.get("hud_style", "classic"))
+                for i in range(self.hud_style_combo.count()):
+                    if self.hud_style_combo.itemData(i) == style_value:
+                        self.hud_style_combo.setCurrentIndex(i)
+                        break
             if hasattr(self, "speed_enable_check"):
                 self.speed_enable_check.setChecked(bool(speed.get("enabled", False)))
             if hasattr(self, "enemy_enable_check"):
                 self.enemy_enable_check.setChecked(bool(enemy.get("enabled", False)))
+            if hasattr(self, "spread_enable_check"):
+                self.spread_enable_check.setChecked(bool(spread.get("enabled", False)))
             if hasattr(self, "mem_enable_check_hud"):
                 self.mem_enable_check_hud.setChecked(bool(cfg.get("memory", {}).get("enabled", False)))
             self.speed_scale_edit.setText(str(speed.get("scale", 1.0)))
@@ -9156,6 +9645,9 @@ QFrame#ThemedDialogFrame QTextEdit {{
             self.enemy_max_edit.setText(str(enemy.get("max_enemies", 6)))
             if hasattr(self, "enemy_distance_edit"):
                 self.enemy_distance_edit.setText(str(enemy.get("max_distance", 1800)))
+            if hasattr(self, "spread_scale_edit"):
+                self.spread_scale_edit.setText(str(spread.get("scale", 1.0)))
+                self.spread_opacity_edit.setText(str(spread.get("opacity", 0.92)))
             penalty = cfg.get("penalty", {})
             if hasattr(self, "penalty_enable_check"):
                 self.penalty_enable_check.setChecked(bool(penalty.get("enabled", False)))
@@ -9210,7 +9702,7 @@ QFrame#ThemedDialogFrame QTextEdit {{
     def save_hud_settings(self):
         current = self.read_hud_config()
         cfg = {
-            "hud_style": current.get("hud_style", "classic"),
+            "hud_style": self.hud_style_combo.currentData() if hasattr(self, "hud_style_combo") else current.get("hud_style", "classic"),
             "speed": {
                 "x": current.get("speed", {}).get("x", 80),
                 "y": current.get("speed", {}).get("y", 90),
@@ -9227,6 +9719,13 @@ QFrame#ThemedDialogFrame QTextEdit {{
                 "opacity": self._num(self.enemy_opacity_edit, 0.92, float, 0.1, 1.0),
                 "max_enemies": self._num(self.enemy_max_edit, 6, int, 1, 12),
                 "max_distance": self._num(self.enemy_distance_edit, 1800, int, 200, 10000) if hasattr(self, "enemy_distance_edit") else current.get("enemy", {}).get("max_distance", 1800),
+            },
+            "spread": {
+                "x": current.get("spread", {}).get("x", 500),
+                "y": current.get("spread", {}).get("y", 320),
+                "enabled": self.spread_enable_check.isChecked() if hasattr(self, "spread_enable_check") else current.get("spread", {}).get("enabled", False),
+                "scale": self._num(self.spread_scale_edit, 1.0, float, 0.3, 4.0) if hasattr(self, "spread_scale_edit") else current.get("spread", {}).get("scale", 1.0),
+                "opacity": self._num(self.spread_opacity_edit, 0.92, float, 0.1, 1.0) if hasattr(self, "spread_opacity_edit") else current.get("spread", {}).get("opacity", 0.92),
             },
             "penalty": {
                 "x": current.get("penalty", {}).get("x", 500),
@@ -9407,6 +9906,8 @@ QColorDialog#ThemedColorPicker QPushButton {{
         crosshair["y"] = crosshair.get("y", -1)
         crosshair.pop("skin", None)
         crosshair.pop("mode", None)
+        crosshair.pop("real_spread", None)
+        crosshair.pop("real_spread_strength", None)
         self.write_hud_config(current)
         self.load_hud_settings_to_ui()
         if self.any_hud_enabled(current):
@@ -9557,6 +10058,7 @@ QColorDialog#ThemedColorPicker QPushButton {{
         "src_internet": {"zh": "互联网", "en": "Internet", "ja": "インターネット", "ko": "인터넷", "ru": "Интернет", "de": "Internet", "fr": "Internet", "es": "Internet"},
         "src_lan": {"zh": "局域网", "en": "LAN", "ja": "LAN", "ko": "LAN", "ru": "LAN", "de": "LAN", "fr": "LAN", "es": "LAN"},
         "src_friends": {"zh": "好友", "en": "Friends", "ja": "フレンド", "ko": "친구", "ru": "Друзья", "de": "Freunde", "fr": "Amis", "es": "Amigos"},
+        "src_favorites": {"zh": "收藏", "en": "Favorites", "ja": "お気に入り", "ko": "즐겨찾기", "ru": "Избранное", "de": "Favoriten", "fr": "Favoris", "es": "Favoritos"},
         "search_ph": {"zh": "搜索名称 / 地图 / 地址…", "en": "Search name / map / address…", "ja": "名前/マップ/アドレスを検索…", "ko": "이름/맵/주소 검색…", "ru": "Поиск: имя/карта/адрес…", "de": "Name/Map/Adresse suchen…", "fr": "Rechercher nom/carte/adresse…", "es": "Buscar nombre/mapa/dirección…"},
         "c_name": {"zh": "名称", "en": "Name", "ja": "名前", "ko": "이름", "ru": "Имя", "de": "Name", "fr": "Nom", "es": "Nombre"},
         "c_map": {"zh": "地图", "en": "Map", "ja": "マップ", "ko": "맵", "ru": "Карта", "de": "Map", "fr": "Carte", "es": "Mapa"},
@@ -9587,6 +10089,9 @@ QColorDialog#ThemedColorPicker QPushButton {{
         "bl_hint": {"zh": "名称会被服主改来规避过滤，改不了的 IP 更可靠；IP 支持前缀匹配整段。", "en": "Names can be changed to dodge filters; IP is more reliable (prefix matches a whole range).", "ja": "名前は変更で回避されがち。IP の方が確実(接頭辞で範囲一致)。", "ko": "이름은 필터 회피로 바뀔 수 있어 IP가 더 확실(접두사로 대역 일치).", "ru": "Имена меняют, чтобы обойти фильтр; IP надёжнее (префикс — весь диапазон).", "de": "Namen werden geändert, um Filter zu umgehen; IP ist zuverlässiger (Präfix = ganzer Bereich).", "fr": "Les noms changent pour éviter les filtres ; l'IP est plus fiable (préfixe = plage entière).", "es": "Los nombres cambian para evadir filtros; la IP es más fiable (el prefijo cubre un rango)."},
         "bl_save": {"zh": "保存", "en": "Save", "ja": "保存", "ko": "저장", "ru": "Сохранить", "de": "Speichern", "fr": "Enregistrer", "es": "Guardar"},
         "bl_cancel": {"zh": "取消", "en": "Cancel", "ja": "キャンセル", "ko": "취소", "ru": "Отмена", "de": "Abbrechen", "fr": "Annuler", "es": "Cancelar"},
+        "fav_col": {"zh": "收藏", "en": "Favorite", "ja": "お気に入り", "ko": "즐겨찾기", "ru": "Избранное", "de": "Favorit", "fr": "Favori", "es": "Favorito"},
+        "fav_add": {"zh": "收藏选中IP", "en": "Favorite selected IP", "ja": "選択 IP をお気に入り", "ko": "선택 IP 즐겨찾기", "ru": "Добавить IP в избранное", "de": "Gewählte IP favorisieren", "fr": "Ajouter l'IP aux favoris", "es": "Añadir IP a favoritos"},
+        "fav_remove": {"zh": "取消收藏IP", "en": "Remove IP favorite", "ja": "IP のお気に入りを解除", "ko": "IP 즐겨찾기 해제", "ru": "Убрать IP из избранного", "de": "IP-Favorit entfernen", "fr": "Retirer l'IP des favoris", "es": "Quitar IP de favoritos"},
     }
 
     def srv_tr(self, key: str) -> str:
@@ -9620,6 +10125,71 @@ QColorDialog#ThemedColorPicker QPushButton {{
             p.write_text(json.dumps(bl, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
+
+    def _srv_favorites_path(self):
+        try:
+            return self.hud_config_path().with_name("danyria_server_favorites.json")
+        except Exception:
+            return Path("danyria_server_favorites.json")
+
+    def _srv_load_favorites(self):
+        favorites = {}
+        try:
+            p = self._srv_favorites_path()
+            if p.exists():
+                data = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    for item in data:
+                        row = item if isinstance(item, dict) else {"addr": str(item)}
+                        addr = server_endpoint(row)
+                        if addr:
+                            favorites[addr] = {"addr": addr, "name": str(row.get("name") or addr), "source": "favorites"}
+        except Exception:
+            pass
+        return favorites
+
+    def _srv_save_favorites(self, favorites):
+        try:
+            p = self._srv_favorites_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            temporary = p.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(list(favorites.values()), ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(p)
+            return True
+        except Exception as exc:
+            QMessageBox.warning(self, self.srv_tr("fav_col"), str(exc))
+            return False
+
+    def _srv_is_favorite(self, r):
+        return server_endpoint(r) in getattr(self, "_srv_favorites", {})
+
+    def _srv_toggle_favorite(self):
+        d = self._srv_selected_data()
+        if not d:
+            return
+        addr = server_endpoint(d)
+        if not addr:
+            return
+        favorites = dict(self._srv_favorites)
+        if addr in favorites:
+            del favorites[addr]
+        else:
+            favorites[addr] = {"addr": addr, "name": str(d.get("name") or addr), "source": "favorites"}
+        if not self._srv_save_favorites(favorites):
+            return
+        self._srv_favorites = favorites
+        browser = getattr(self, "_srv_browser", None)
+        if browser:
+            browser.set_favorites(favorites)
+        self._srv_update_favorite_button()
+        self._srv_refresh_table()
+
+    def _srv_update_favorite_button(self):
+        if not hasattr(self, "srv_fav_btn"):
+            return
+        d = self._srv_selected_data()
+        self.srv_fav_btn.setEnabled(bool(d and server_endpoint(d)))
+        self.srv_fav_btn.setText(self.srv_tr("fav_remove") if d and self._srv_is_favorite(d) else self.srv_tr("fav_add"))
 
     def _srv_row_ip(self, r):
         ip = str(r.get("ip", "") or "")
@@ -9710,6 +10280,7 @@ QColorDialog#ThemedColorPicker QPushButton {{
             except Exception:
                 dirs = []
             self._srv_browser = ServerBrowser(steam_dll_dirs=dirs)
+            self._srv_browser.set_favorites(self._srv_favorites)
             try:
                 self._srv_browser.set_mode(self.srv_source.currentData() or "friends")
             except Exception:
@@ -9739,7 +10310,7 @@ QColorDialog#ThemedColorPicker QPushButton {{
         row = QHBoxLayout()
         row.setSpacing(8)
         self.srv_source = QComboBox()
-        for key, mode in (("src_friends", "friends"), ("src_lan", "lan"), ("src_internet", "internet")):
+        for key, mode in (("src_friends", "friends"), ("src_lan", "lan"), ("src_internet", "internet"), ("src_favorites", "favorites")):
             self.srv_source.addItem(self.srv_tr(key), mode)
         self.srv_source.currentIndexChanged.connect(self._srv_source_changed)
         self.srv_search = QLineEdit()
@@ -9759,9 +10330,12 @@ QColorDialog#ThemedColorPicker QPushButton {{
         self.srv_bl_check.toggled.connect(self._srv_toggle_blacklist)
         self.srv_bl_edit_btn = self.button(self.srv_tr("bl_edit"), self._srv_edit_blacklist)
         self.srv_bl_block_btn = self.button(self.srv_tr("bl_block_sel"), self._srv_block_selected)
+        self._srv_favorites = self._srv_load_favorites()
+        self.srv_fav_btn = self.button(self.srv_tr("fav_add"), self._srv_toggle_favorite)
         bl_row.addWidget(self.srv_bl_check, 0)
         bl_row.addWidget(self.srv_bl_edit_btn, 0)
         bl_row.addWidget(self.srv_bl_block_btn, 0)
+        bl_row.addWidget(self.srv_fav_btn, 0)
         self.srv_guard_check = QCheckBox(self.career_tr("guard"))
         self.srv_guard_check.setToolTip(self.career_tr("guard_tip"))
         self.srv_guard_check.setChecked(bool(self._load_app_config().get("crash_guard", False)))
@@ -9776,10 +10350,10 @@ QColorDialog#ThemedColorPicker QPushButton {{
 
         body = QHBoxLayout()
         body.setSpacing(10)
-        self.srv_table = QTableWidget(0, 5)
+        self.srv_table = QTableWidget(0, 6)
         self.srv_table.setHorizontalHeaderLabels([
             self.srv_tr("c_name"), self.srv_tr("c_map"), self.srv_tr("c_players"),
-            self.srv_tr("c_ping"), self.srv_tr("c_source")])
+            self.srv_tr("c_ping"), self.srv_tr("c_source"), self.srv_tr("fav_col")])
         try:
             self.srv_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
             self.srv_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -9789,7 +10363,7 @@ QColorDialog#ThemedColorPicker QPushButton {{
         self.srv_table.verticalHeader().setVisible(False)
         self.srv_table.itemSelectionChanged.connect(self._srv_selected)
         self.srv_table.itemDoubleClicked.connect(lambda *_: self._srv_join())
-        self.make_columns_resizable(self.srv_table, [250, 150, 80, 64, 84])
+        self.make_columns_resizable(self.srv_table, [250, 150, 80, 64, 84, 54])
         body.addWidget(self.srv_table, 2)
 
         detail = QFrame(objectName="PathCard")
@@ -9807,6 +10381,7 @@ QColorDialog#ThemedColorPicker QPushButton {{
         body.addWidget(detail, 1)
         L.addLayout(body, 1)
         self._srv_rowdata = []
+        self._srv_update_favorite_button()
 
     def _srv_source_changed(self, *_):
         b = getattr(self, "_srv_browser", None)
@@ -9815,6 +10390,7 @@ QColorDialog#ThemedColorPicker QPushButton {{
             self._srv_rowdata = []
             self.srv_table.setRowCount(0)
             self.srv_detail.setText(self.srv_tr("no_sel"))
+        self._srv_refresh_table()
 
     def _srv_force_refresh(self):
         b = getattr(self, "_srv_browser", None)
@@ -9840,28 +10416,42 @@ QColorDialog#ThemedColorPicker QPushButton {{
 
     def _srv_refresh_table(self):
         b = getattr(self, "_srv_browser", None)
-        if b is None or not hasattr(self, "srv_table"):
+        if not hasattr(self, "srv_table"):
             return
-        servers, friends, status = b.snapshot()
+        selected = self._srv_selected_data() or {}
+        selected_key = (server_endpoint(selected), selected.get("steamid"), selected.get("lobby"))
+        servers, friends, status = b.snapshot() if b else ([], [], "")
         self.srv_status.setText(status or "")
         src = self.srv_source.currentData() or "internet"
         rows = list(friends) if src == "friends" else list(servers)
+        if src == "favorites":
+            live = {server_endpoint(row): row for row in servers}
+            rows = [{**saved, **live.get(addr, {"offline": True}), "source": "favorites"}
+                    for addr, saved in self._srv_favorites.items()]
         q = self.srv_search.text().strip().lower()
         if q:
             rows = [r for r in rows if q in ("%s %s %s" % (r.get("name", ""), r.get("map", ""), r.get("addr", ""))).lower()]
         bl = getattr(self, "_srv_bl", None)
         if bl and bl.get("enabled"):
             rows = [r for r in rows if not self._srv_blacklisted(r, bl)]
-        rows.sort(key=lambda r: (-int(r.get("players", 0) or 0), int(r.get("ping", 9999) or 9999)))
-        src_label = {"internet": self.srv_tr("src_internet"), "lan": self.srv_tr("src_lan"), "friend": self.srv_tr("src_friends")}
+        rows.sort(key=lambda r: (not self._srv_is_favorite(r), -int(r.get("players", 0) or 0), int(r.get("ping", 9999) or 9999)))
+        src_label = {"internet": self.srv_tr("src_internet"), "lan": self.srv_tr("src_lan"), "friend": self.srv_tr("src_friends"), "favorites": self.srv_tr("src_favorites")}
+        self.srv_table.blockSignals(True)
+        self.srv_table.clearSelection()
+        self.srv_table.setCurrentCell(-1, -1)
         self._srv_rowdata = rows
         self.srv_table.setRowCount(len(rows))
         for i, r in enumerate(rows):
             self.srv_table.setItem(i, 0, QTableWidgetItem(str(r.get("name", ""))))
             self.srv_table.setItem(i, 1, QTableWidgetItem(str(r.get("map", "") or ("(lobby)" if r.get("lobby") else ""))))
-            self.srv_table.setItem(i, 2, QTableWidgetItem("%d/%d" % (int(r.get("players", 0) or 0), int(r.get("max", 0) or 0))))
-            self.srv_table.setItem(i, 3, QTableWidgetItem("" if src == "friends" else str(int(r.get("ping", 0) or 0))))
+            self.srv_table.setItem(i, 2, QTableWidgetItem("—" if r.get("offline") else "%d/%d" % (int(r.get("players", 0) or 0), int(r.get("max", 0) or 0))))
+            self.srv_table.setItem(i, 3, QTableWidgetItem("—" if r.get("offline") else "" if src == "friends" else str(int(r.get("ping", 0) or 0))))
             self.srv_table.setItem(i, 4, QTableWidgetItem(src_label.get(r.get("source", ""), r.get("source", ""))))
+            self.srv_table.setItem(i, 5, QTableWidgetItem("★" if self._srv_is_favorite(r) else ""))
+            if selected and (server_endpoint(r), r.get("steamid"), r.get("lobby")) == selected_key:
+                self.srv_table.selectRow(i)
+        self.srv_table.blockSignals(False)
+        self._srv_selected()
         if src == "friends" and not friends:
             self.srv_status.setText((status or "") + " · " + self.srv_tr("friends_note"))
 
@@ -9878,6 +10468,7 @@ QColorDialog#ThemedColorPicker QPushButton {{
         d = self._srv_selected_data()
         if not d:
             self.srv_detail.setText(self.srv_tr("no_sel"))
+            self._srv_update_favorite_button()
             return
         lines = [
             str(d.get("name", "")),
@@ -9885,10 +10476,12 @@ QColorDialog#ThemedColorPicker QPushButton {{
             "%s: %s" % (self.srv_tr("c_map"), d.get("map", "") or ("(lobby)" if d.get("lobby") else "-")),
             "%s: %d / %d" % (self.srv_tr("c_players"), int(d.get("players", 0) or 0), int(d.get("max", 0) or 0)),
         ]
-        if d.get("source") != "friend":
+        if d.get("source") != "friend" and not d.get("offline"):
             lines.append("%s: %d ms" % (self.srv_tr("c_ping"), int(d.get("ping", 0) or 0)))
         lines.append("Addr: %s" % (d.get("addr") or "-"))
+        lines.append("%s: %s" % (self.srv_tr("fav_col"), "★" if self._srv_is_favorite(d) else "-"))
         self.srv_detail.setText("\n".join(lines))
+        self._srv_update_favorite_button()
 
     def _srv_join(self):
         d = self._srv_selected_data()
@@ -9945,11 +10538,12 @@ QColorDialog#ThemedColorPicker QPushButton {{
                 self.srv_bl_check.setText(self.srv_tr("bl_enable"))
                 self.srv_bl_edit_btn.setText(self.srv_tr("bl_edit"))
                 self.srv_bl_block_btn.setText(self.srv_tr("bl_block_sel"))
-            for i, key in enumerate(("src_friends", "src_lan", "src_internet")):
+                self._srv_update_favorite_button()
+            for i, key in enumerate(("src_friends", "src_lan", "src_internet", "src_favorites")):
                 self.srv_source.setItemText(i, self.srv_tr(key))
             self.srv_table.setHorizontalHeaderLabels([
                 self.srv_tr("c_name"), self.srv_tr("c_map"), self.srv_tr("c_players"),
-                self.srv_tr("c_ping"), self.srv_tr("c_source")])
+                self.srv_tr("c_ping"), self.srv_tr("c_source"), self.srv_tr("fav_col")])
             self._retranslate_career()
         except Exception:
             pass
@@ -10334,6 +10928,9 @@ QColorDialog#ThemedColorPicker QPushButton {{
         self._crash_timer = QTimer(self)
         self._crash_timer.timeout.connect(self._crash_tick)
         self._crash_timer.start(5000)
+        self._memory_timer = QTimer(self)
+        self._memory_timer.timeout.connect(self._memory_mode_tick)
+        self._memory_timer.start(3000)
 
     def build_weapons_page(self):
         splitter = QSplitter(Qt.Orientation.Horizontal)
